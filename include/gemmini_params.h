@@ -30,6 +30,9 @@ typedef uint32_t scale_acc_t_bits;
 typedef float acc_scale_t;
 typedef uint32_t acc_scale_t_bits;
 
+#define HAS_NORMALIZATIONS
+#define NORM_STAT_IDS 1
+
 #define row_align(blocks) __attribute__((aligned(blocks*DIM*sizeof(elem_t))))
 #define row_align_acc(blocks) __attribute__((aligned(blocks*DIM*sizeof(acc_t))))
 
