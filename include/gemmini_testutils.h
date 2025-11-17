@@ -214,6 +214,18 @@ static void printMatrix(elem_t m[DIM][DIM]) {
   }
 }
 
+static void printFPMatrix(elem_t m[DIM][DIM]) {
+  for (size_t i = 0; i < DIM; ++i) {
+    for (size_t j = 0; j < DIM; ++j)
+#ifndef ELEM_T_IS_FLOAT
+      printf("%d ", m[i][j]);
+#else
+      printf("%x ", elem_t_to_floats(m[i][j]));
+#endif
+    printf("\n");
+  }
+}
+
 static void printMatrixAcc(acc_t m[DIM][DIM]) {
   for (size_t i = 0; i < DIM; ++i) {
     for (size_t j = 0; j < DIM; ++j)
@@ -264,8 +276,9 @@ static int is_equal_transposed(elem_t x[DIM][DIM], elem_t y[DIM][DIM]) {
       for (size_t i = 0; i < dim_i; i++) \
         for (size_t j = 0; j < dim_j; ++j) { \
           if (x[i][j] != y[i][j]) { \
+            printf("<%d, %d>\n", i, j); \
+            printf("%d != %d\n",x[i][j], y[i][j]); \
             result = 0; \
-            break; \
           } \
         } \
       result;})

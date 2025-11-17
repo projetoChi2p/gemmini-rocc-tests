@@ -1,16 +1,23 @@
 include $(abs_top_srcdir)/Makefrag
 
 tests = \
-	test \
-	mlp1 \
-	mlp2 \
-	mlp3 \
-	mlp4 \
-	mlp1_32 \
-	mlp2_32 \
-	mlp3_32 \
-	mlp4_32 \
-	simple_mlp
+	test_attention \
+	test_ffn \
+	test_matmul \
+	test_qkv \
+	test_qk \
+	test_qk_matmul \
+	test_cpu_softmax \
+	test_softmax \
+	test_context \
+	test_encoder \
+	test_exp \
+	test_layernorm \
+	test_resadd \
+	test_norm_softmax \
+	encoder \
+	encoder_large \
+
 
 tests_baremetal = $(tests:=-baremetal)
 runs_baremetal = $(addsuffix .run,$(tests_baremetal))
@@ -23,7 +30,10 @@ else
 endif
 
 BENCH_COMMON = $(abs_top_srcdir)/riscv-tests/benchmarks/common
-GEMMINI_HEADERS = $(abs_top_srcdir)/include/gemmini.h $(abs_top_srcdir)/include/gemmini_params.h $(abs_top_srcdir)/include/gemmini_nn.h $(abs_top_srcdir)/include/gemmini_testutils.h
+GEMMINI_HEADERS = 	$(abs_top_srcdir)/include/gemmini.h \
+					$(abs_top_srcdir)/include/gemmini_params.h \
+					$(abs_top_srcdir)/include/gemmini_nn.h \
+					$(abs_top_srcdir)/include/gemmini_testutils.h 
 
 CFLAGS := $(CFLAGS) \
 	-DPREALLOCATE=1 \
@@ -43,6 +53,7 @@ CFLAGS := $(CFLAGS) \
 	-I$(abs_top_srcdir) \
 	-I$(BENCH_COMMON) \
 	-DID_STRING=$(ID_STRING) \
+	-Wno-incompatible-pointer-types
 
 CFLAGS_PK := \
 	$(CFLAGS) \
