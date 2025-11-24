@@ -1,4 +1,3 @@
-// test_minivit_classifier.c
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -11,8 +10,9 @@
 #include "include/gemmini_nn.h"
 
 // Inclui os pesos, o lote de imagens e os labels
-#include "includes/classifier_params_large.h" 
-#include "transformer_layers.c"
+#include "includes/classifier_params_large_multilayer.h" 
+// Inclui as declarações das funções (attention, ffn, etc)
+#include "transformer_layers_multiencoder.c" // Assuming the new C code is in this file
 
 // Helper para encontrar o dígito previsto
 int find_max_index(elem_t* arr, int size) {
@@ -56,7 +56,7 @@ int main (int argc, char * argv[]) {
 
     gemmini_flush(0);
     enum tiled_matmul_type_t tiled_matmul_type = WS;
-    printf("--- Starting MiniViT Classifier Batch Inference --- \n");
+    printf("--- Starting MiniViT Classifier Batch Inference (Multi-Layer) --- \n");
     printf("Running %d inferences...\n", NUM_INFERENCES);
 
     int correct_predictions = 0;
@@ -85,7 +85,9 @@ int main (int argc, char * argv[]) {
             false, tiled_matmul_type);
         
         // === PASSO 2: ENCODER ===
+        // Note: The ENCODER_LAYERS constant is now the first argument.
         encoder_decoder(
+            ENCODER_LAYERS, // New: num_layers
             HIDDEN_DIM, EXPANSION_DIM, NUM_HEADS, CROSS_NUM_HEADS,
             SEQ_LEN, COMPRESSION_FACTOR,
             (const elem_t *)encoder_input, NULL, (elem_t *)encoder_output,
@@ -138,7 +140,6 @@ int main (int argc, char * argv[]) {
     } // === FIM DO LOOP DE INFERÊNCIA ===
 
     printf("--- Batch Inference Finished --- \n");
-    printf("");
     
     // --- Relatório Final ---
     double accuracy = (double)correct_predictions / NUM_INFERENCES * 100.0;
@@ -148,13 +149,12 @@ int main (int argc, char * argv[]) {
     printf("Total de Amostras: %d\n", NUM_INFERENCES);
     printf("Corretas:        %d\n", correct_predictions);
 #ifdef ELEM_T_IS_FLOAT
-    printf("Acuracia:        %de-2%%\n", elem_t_to_floats(accuracy*100));
+    printf("Acuracia:        %f%%\n", accuracy);
+#else
+    printf("Acuracia:        %d%%\n", (int)accuracy);
 #endif
     printf("Ciclos Totais:   %llu\n", total_cycles);
-#ifdef ELEM_T_IS_FLOAT
-    printf("Ciclos/Inferencia: %d\n", elem_t_to_floats(avg_cycles));
-#endif
-    printf("");
+    printf("Ciclos/Inferencia: %f\n", avg_cycles);
 
     return 0;
 }

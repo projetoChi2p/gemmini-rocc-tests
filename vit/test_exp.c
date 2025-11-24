@@ -26,12 +26,14 @@ void test_exp_approx_basic() {
     for (int i = 0; i < TEST_SIZE; i++) {
         output[i] = exp_approx(input[i]);
         if (fp32abs(output[i] - golden[i]) > TOLERANCE){
+            #ifdef ELEM_T_IS_FLOAT
             printf("Mismatch! index %d: output=%de-6 golden=%de-6 (diff=%de-6)\n", i, 
                 elem_t_to_floats(output[i]*1000000), 
                 elem_t_to_floats(golden[i]*1000000), 
                 elem_t_to_floats(fp32abs(output[i]-golden[i])*1000000)
             );
             //printf("");
+            #endif
             errors += 1;
         }
     }
