@@ -15,8 +15,12 @@ tests = \
 	test_layernorm \
 	test_resadd \
 	test_norm_softmax \
+	test_gelu \
 	encoder \
 	encoder_large \
+	encoder_debug \
+	encoder_multilayer \
+	encoder_multilayer_large \
 
 
 tests_baremetal = $(tests:=-baremetal)

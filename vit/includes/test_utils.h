@@ -31,19 +31,26 @@ static bool check_matrix(const char* layer_name,
         if (diff > tolerance) {
             if (errors < 5) { // Imprimir apenas os primeiros 5 erros
                 if (errors == 0) printf(ANSI_COLOR_RED "FAIL\n" ANSI_COLOR_RESET);
+                #ifdef ELEM_T_IS_FLOAT
                 printf("  Mismatch at index %d (row %d, col %d): C=%de-3 vs Py=%de-3 (diff=%de-3)\n", 
                        i, i / cols, i % cols, elem_t_to_floats(actual[i]*1000), elem_t_to_floats(expected[i]*1000), elem_t_to_floats(diff*1000));
+                #endif
             }
             errors++;
         }else {
+            #ifdef ELEM_T_IS_FLOAT
             printf("  Correct at index %d (row %d, col %d): C=%de-3 vs Py=%de-3 (diff=%de-3)\n", 
                 i, i / cols, i % cols, elem_t_to_floats(actual[i]*1000), elem_t_to_floats(expected[i]*1000), elem_t_to_floats(diff*1000));
+
+            #endif
 
         }
     }
 
     if (errors == 0) {
+        #ifdef ELEM_T_IS_FLOAT
         printf(ANSI_COLOR_GREEN "PASS" ANSI_COLOR_RESET " (Max diff: %de-3)\n", elem_t_to_floats(1000*max_diff));
+        #endif
         return true;
     } else {
         printf(ANSI_COLOR_RED "  Total Errors: %d" ANSI_COLOR_RESET "\n", errors);

@@ -83,13 +83,12 @@ int main (int argc, char * argv[]) {
             MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, ACC_SCALE_IDENTITY,
             embed_out, pos_embed_data, encoder_input,
             false, tiled_matmul_type);
-        
+
         // === PASSO 2: ENCODER ===
         // Note: The ENCODER_LAYERS constant is now the first argument.
-        encoder_decoder(
-            ENCODER_LAYERS, // New: num_layers
+        encoder_decoder( // New: num_layers
             HIDDEN_DIM, EXPANSION_DIM, NUM_HEADS, CROSS_NUM_HEADS,
-            SEQ_LEN, COMPRESSION_FACTOR,
+            SEQ_LEN, COMPRESSION_FACTOR, ENCODER_LAYERS,
             (const elem_t *)encoder_input, NULL, (elem_t *)encoder_output,
             (const elem_t *)Wq, (const elem_t *)Wk, (const elem_t *)Wv, (const elem_t *)Wo,
             (const elem_t *)Wq_cross, (const elem_t *)Wk_cross, (const elem_t *)Wv_cross, (const elem_t *)Wo_cross,

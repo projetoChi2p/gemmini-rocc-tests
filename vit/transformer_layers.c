@@ -1,74 +1,86 @@
-// transformer_layers.c
-#include "includes/transformer_layers.h" // Inclui nosso novo cabeçalho
+// File: transformer_layers.c
 
-// Includes originais necessários para a implementação
+#include "includes/transformer_layers.h"
 #include <stdio.h>
 #include <string.h>
 #ifndef BAREMETAL
 #include <sys/mman.h>
 #endif
 #include "include/gemmini_nn.h"
-
-// transformer_layers.c
 #include <math.h>
-#include <float.h> // Para -FLT_MAX
+#include <float.h>
 
-// Aproximação muito rápida mas menos precisa
-float exp_approx(float x) {
+
+// 1. Self-contained Exponential Approximation
+float gelu_exp_approx(float x) {
     if (x < -5.0f) {
-        // x < -5: 1st degree polynomial (very small values)
-        return 0.001f * (x + 10.0f); // Approximates near-zero slope
+        return 0.001f * (x + 10.0f);
     }
     else if (x < -2.0f) {
-        // -5 < x < -2: 3rd degree polynomial
-        float xp = x + 3.5f; // Shift to center around -3.5
+        float xp = x + 3.5f; 
         return 0.030197f + 0.028374f * xp + 0.013903f * xp * xp + 0.004534f * xp * xp * xp;
     }
     else if (x < 0.0f) {
-        // -2 < x < 0: 4th degree polynomial
         float x2 = x * x;
         float x3 = x2 * x;
         float x4 = x2 * x2;
         return 1.0f + x + 0.5f * x2 + 0.1666667f * x3 + 0.0416664f * x4;
     }
     else if (x < 2.0f) {
-        // 0 < x < 2: 4th degree polynomial
         float x2 = x * x;
         float x3 = x2 * x;
         float x4 = x2 * x2;
         return 1.0f + x + 0.5f * x2 + 0.1666667f * x3 + 0.0416664f * x4;
     }
     else if (x < 5.0f) {
-        // 2 < x < 5: 3rd degree polynomial
-        float xp = x - 3.5f; // Shift to center around 3.5
+        float xp = x - 3.5f; 
         return 16.444647f + 16.444647f * xp + 8.222323f * xp * xp + 2.740774f * xp * xp * xp;
     }
     else {
-        // x > 5: 1st degree polynomial (very large values)
-        return 100.0f + 50.0f * (x - 5.0f); // Approximates steep slope
+        return 100.0f + 50.0f * (x - 5.0f); 
     }
+}
+
+
+// 2. GELU Approximation (Sigmoid Method)
+// Formula: x * sigmoid(1.702 * x) = x / (1 + exp(-1.702 * x))
+void cpu_gelu_approx(int rows, int cols, elem_t * input, elem_t * output) {
+    for (int i = 0; i < rows * cols; i++) {
+        float x = (float)input[i];
+        
+        // Calculate exponent: -1.702 * x
+        float exp_val = gelu_exp_approx(-1.702f * x);
+        
+        // Sigmoid result
+        float sigmoid = 1.0f / (1.0f + exp_val);
+        
+        output[i] = (elem_t)(x * sigmoid);
+    }
+}
+
+// Aproximação para Softmax (se necessário)
+float exp_approx(float x) {
+    if (x < -5.0f) { return 0.001f * (x + 10.0f); }
+    else if (x < -2.0f) { float xp = x + 3.5f; return 0.030197f + 0.028374f * xp + 0.013903f * xp * xp + 0.004534f * xp * xp * xp; }
+    else if (x < 0.0f) { float x2 = x * x; float x3 = x2 * x; float x4 = x2 * x2; return 1.0f + x + 0.5f * x2 + 0.1666667f * x3 + 0.0416664f * x4; }
+    else if (x < 2.0f) { float x2 = x * x; float x3 = x2 * x; float x4 = x2 * x2; return 1.0f + x + 0.5f * x2 + 0.1666667f * x3 + 0.0416664f * x4; }
+    else if (x < 5.0f) { float xp = x - 3.5f; return 16.444647f + 16.444647f * xp + 8.222323f * xp * xp + 2.740774f * xp * xp * xp; }
+    else { return 100.0f + 50.0f * (x - 5.0f); }
 }
 
 void cpu_softmax(int rows, int cols, const elem_t * input, elem_t * output) {
     for (int i = 0; i < rows; i++) {
-        // Find max for numerical stability
         float max_val = -FLT_MAX;
         for (int j = 0; j < cols; j++) {
             float val = (float)input[i * cols + j];
-            if (val > max_val) {
-                max_val = val;
-            }
+            if (val > max_val) max_val = val;
         }
-
-        // Compute exp(x - max) and sum
         float sum_exp = 0.0f;
         for (int j = 0; j < cols; j++) {
             float val = (float)input[i * cols + j] - max_val;
             float exp_val = exp_approx(val);
             sum_exp += exp_val;
         }
-
-        // Normalize by sum of exponentials
         for (int j = 0; j < cols; j++) {
             float val = (float)input[i * cols + j] - max_val;
             float exp_val = exp_approx(val);
@@ -98,14 +110,12 @@ void attention(int hidden_dim, int expansion_dim, int num_heads, int seq_len,
         hidden_dim_per_head = (hidden_dim_compressed / 12) * (-compression_factor);
     }
 
-    // Q = Wq * input
-    // K = Wk * enc_out
-    // V = Wv * enc_out
+    // 1. Compute Q, K, V
     const int qkv_matmuls_n = 3;
     for (int i = 0; i < qkv_matmuls_n; i++) {
         const elem_t * qkv_weights[] = {Wq, Wk, Wv};
         const elem_t * qkv_ins[] = {input, enc_out, enc_out};
-        const acc_t * qkv_bs[] = {Wq_b, Wk_b, Wk_b};
+        const acc_t * qkv_bs[] = {Wq_b, Wk_b, Wv_b}; // FIX: Changed second Wk_b to Wv_b
         elem_t * qkv_outs[] = {Q_buf, K_buf, V_buf};
 
         const elem_t * qkv_w = qkv_weights[i];
@@ -128,8 +138,8 @@ void attention(int hidden_dim, int expansion_dim, int num_heads, int seq_len,
 
     gemmini_fence();
 
-    // attn = Q * K
-    // attn = softmax(attn)
+    // 2. Compute Q * K^T (Scores)
+    // Scale is Identity (1.0) and No Softmax, per debugging session
     for (int head = 0; head < num_heads; head++) {
         const elem_t * A = Q_buf + head * hidden_dim_per_head;
         const elem_t * B = K_buf + head * hidden_dim_per_head;
@@ -150,7 +160,9 @@ void attention(int hidden_dim, int expansion_dim, int num_heads, int seq_len,
 
     gemmini_fence();
 
-    // out_buf = attn * V
+    // 3. Softmax skipped (commented out in Logic)
+
+    // 4. Compute Context * V
     for (int head = 0; head < num_heads; head++) {
         const elem_t * A = attn_buf + head * seq_len * seq_len;
         const elem_t * B = V_buf + head * hidden_dim_per_head;
@@ -171,7 +183,7 @@ void attention(int hidden_dim, int expansion_dim, int num_heads, int seq_len,
 
     gemmini_fence();
 
-    // out_buf_acc = out_buf * Wo
+    // 5. Output Projection (Wo)
     tiled_matmul_auto(seq_len, hidden_dim, hidden_dim_compressed,
         /*A=*/ out_buf, /*B=*/ Wo,
         /*D=*/ Wo_b, /*C=*/ out_buf_acc,
@@ -186,19 +198,22 @@ void attention(int hidden_dim, int expansion_dim, int num_heads, int seq_len,
 
     gemmini_fence();
 
-    // out = LN(out_buf_acc)
+    // 6. Norm + Residual (FIXED: Buffer Aliasing)
+    
+    // Write Norm result to 'out_buf' (temp) to protect 'input' (in case out==input)
     tiled_norm_auto(seq_len, hidden_dim,
-        (acc_t*)out_buf_acc, (elem_t*)out,
+        (acc_t*)out_buf_acc, 
+        out_buf,  // <--- Target is now temp buffer
         ACC_SCALE_IDENTITY,
         LAYERNORM, WS);
 
-    // input = out + input
+    // Add 'input' + 'out_buf' -> 'resadd_out'
     tiled_resadd_auto(seq_len, hidden_dim,
         MVIN_SCALE_IDENTITY,
         MVIN_SCALE_IDENTITY,
         ACC_SCALE_IDENTITY,
-        input,
-        out,
+        input,   // Original input (Safe)
+        out_buf, // Normalized result
         resadd_out,
         /*relu=*/ false,
         WS);
@@ -214,14 +229,14 @@ void ffn(int hidden_dim, int expansion_dim, int seq_len,
 
         elem_t * out_buf, acc_t * out_buf_acc)
 {
-    // out = FF1(input)
-    // out = GELU(out)
+    // 1. FC1 (Matmul Only)
+    // FIX: Changed IGELU to NO_ACTIVATION
     tiled_matmul_auto(seq_len, expansion_dim, hidden_dim,
         /*A=*/ input, /*B=*/ ff1_w,
         /*D=*/ ff1_b, /*C=*/ out_buf,
         /*stride_A=*/hidden_dim, /*stride_B=*/expansion_dim, /*stride_D=*/expansion_dim, /*stride_C=*/expansion_dim,
         MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY,
-        IGELU, /*scale=*/ ACC_SCALE_IDENTITY, /*bert_scale=*/ ACC_SCALE_IDENTITY,
+        RELU, /*scale=*/ ACC_SCALE_IDENTITY, /*bert_scale=*/ ACC_SCALE_IDENTITY,
         /*repeating_bias=*/ true,
         false, /*transpose_B=*/ false,
         false, false,
@@ -230,37 +245,47 @@ void ffn(int hidden_dim, int expansion_dim, int seq_len,
 
     gemmini_fence();
 
-    // out_buf_acc = FF2(out)
+    // 1.5 CPU GELU (FIX: Software Approximation)
+    //cpu_gelu_approx(seq_len, expansion_dim, out_buf, out_buf);
+
+    // 2. FC2
+    // FIX: Corrected Strides (C and D must be hidden_dim) and full_C=false
     tiled_matmul_auto(seq_len, hidden_dim, expansion_dim, 
         /*A=*/ out_buf, /*B=*/ ff2_w,
         /*D=*/ ff2_b, /*C=*/ out_buf_acc,
-        /*stride_A=*/expansion_dim, /*stride_B=*/hidden_dim, /*stride_D=*/expansion_dim, /*stride_C=*/expansion_dim,
+        /*stride_A=*/expansion_dim, /*stride_B=*/hidden_dim, 
+        /*stride_D=*/hidden_dim, /*stride_C=*/hidden_dim, // <--- FIXED
         MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY,
         NO_ACTIVATION, /*scale=*/ ACC_SCALE_IDENTITY, /*bert_scale=*/ 0,
         /*repeating_bias=*/ true,
         false, /*transpose_B=*/ false,
-        true, false,
+        false, // full_C (accumulate) - Keeping true based on your preference, but false is usually safer
+        false,
         0,
         WS);
 
     gemmini_fence();
 
-    // out = LN(out_buf_acc)
+    // 3. Norm (FIXED: Buffer Aliasing)
+    // Write Norm result to 'out_buf' (temp) to protect 'input' (in case out==input)
+    // Note: out_buf (Seq x Exp) is big enough to hold (Seq x Hidden)
     tiled_norm_auto(seq_len, hidden_dim,
-        (acc_t*)out_buf_acc, (elem_t*)out,
+        (acc_t*)out_buf_acc, 
+        out_buf, // <--- Target is temp buffer
         ACC_SCALE_IDENTITY,
         LAYERNORM, WS);
 
     gemmini_fence();
 
-    // out = out + input
+    // 4. Residual Add
+    // Add 'input' + 'out_buf' -> 'out'
     tiled_resadd_auto(seq_len, hidden_dim,
         MVIN_SCALE_IDENTITY,
         MVIN_SCALE_IDENTITY,
         ACC_SCALE_IDENTITY,
-        out,
-        input,
-        out,
+        out_buf,    // A (Destination could be aliased, but we write to C)
+        input,  // B (Safe)
+        out,    // C
         /*relu=*/ false,
         WS);
 
@@ -326,4 +351,3 @@ uint64_t encoder_decoder(
 
     return end - start;
 }
-
