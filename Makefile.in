@@ -5,8 +5,8 @@ RISCVTOOLS      := @RISCVTOOLS@
 ROCC = examples
 RUNNER         := "spike --extension=gemmini "
 
-.PHONY: all bareMetalC clean imagenet transformers mlps
-all: bareMetalC imagenet transformers mlps
+.PHONY: all bareMetalC clean imagenet transformers mlps vit quantization ViTRuns
+all: bareMetalC imagenet transformers mlps vit quantization ViTRuns
 
 vars = \
 	abs_top_srcdir=$(abs_top_srcdir) \
@@ -30,11 +30,26 @@ transformers:
 mlps:
 	mkdir -p $@
 	$(MAKE) -C $@ -f $(abs_top_srcdir)/$@/Makefile $(vars)
+	
+vit:
+	mkdir -p $@
+	$(MAKE) -C $@ -f $(abs_top_srcdir)/$@/Makefile $(vars)
+
+quantization:
+	mkdir -p $@
+	$(MAKE) -C $@ -f $(abs_top_srcdir)/$@/Makefile $(vars)
+
+ViTRuns:
+	mkdir -p $@
+	$(MAKE) -C $@ -f $(abs_top_srcdir)/$@/Makefile $(vars)
 
 clean:
 	$(MAKE) -C bareMetalC -f $(abs_top_srcdir)/bareMetalC/Makefile abs_top_srcdir=$(abs_top_srcdir) PREFIX=$(ROCC)-bareMetalC clean
 	$(MAKE) -C imagenet -f $(abs_top_srcdir)/imagenet/Makefile abs_top_srcdir=$(abs_top_srcdir) PREFIX=$(ROCC)-imagenet clean
 	$(MAKE) -C mlps -f $(abs_top_srcdir)/mlps/Makefile abs_top_srcdir=$(abs_top_srcdir) PREFIX=$(ROCC)-mlps clean
+	$(MAKE) -C vit -f $(abs_top_srcdir)/vit/Makefile abs_top_srcdir=$(abs_top_srcdir) PREFIX=$(ROCC)-vit clean
+	$(MAKE) -C quantization -f $(abs_top_srcdir)/quantization/Makefile abs_top_srcdir=$(abs_top_srcdir) PREFIX=$(ROCC)-quantization clean
+	$(MAKE) -C ViTRuns -f $(abs_top_srcdir)/ViTRuns/Makefile abs_top_srcdir=$(abs_top_srcdir) PREFIX=$(ROCC)-ViTRuns clean
 
 test-baremetal-bareMetalC:
 	make -C bareMetalC	\
@@ -69,3 +84,38 @@ test-baremetal: test-baremetal-bareMetalC
 		RISCVTOOLS=$(RISCVTOOLS) \
 		RUNNER=$(RUNNER) \
 		run-baremetal
+
+	make -C vit	\
+	        -f $(abs_top_srcdir)/vit/Makefile \
+                TARGET_MAKEFILE=$(abs_top_srcdir)/vit/Makefile \
+		abs_top_srcdir=$(abs_top_srcdir) \
+	 	src_dir=$(abs_top_srcdir)/vit \
+	 	XLEN=$(XLEN) \
+	 	PREFIX=$(ROCC)-vit \
+		RISCVTOOLS=$(RISCVTOOLS) \
+		RUNNER=$(RUNNER) \
+		run-baremetal
+
+	make -C quantization	\
+	        -f $(abs_top_srcdir)/quantization/Makefile \
+                TARGET_MAKEFILE=$(abs_top_srcdir)/quantization/Makefile \
+		abs_top_srcdir=$(abs_top_srcdir) \
+	 	src_dir=$(abs_top_srcdir)/quantization \
+	 	XLEN=$(XLEN) \
+	 	PREFIX=$(ROCC)-quantization \
+		RISCVTOOLS=$(RISCVTOOLS) \
+		RUNNER=$(RUNNER) \
+		run-baremetal
+
+	make -C ViTRuns	\
+	        -f $(abs_top_srcdir)/ViTRuns/Makefile \
+                TARGET_MAKEFILE=$(abs_top_srcdir)/ViTRuns/Makefile \
+		abs_top_srcdir=$(abs_top_srcdir) \
+	 	src_dir=$(abs_top_srcdir)/ViTRuns \
+	 	XLEN=$(XLEN) \
+	 	PREFIX=$(ROCC)-ViTRuns \
+		RISCVTOOLS=$(RISCVTOOLS) \
+		RUNNER=$(RUNNER) \
+		run-baremetal
+
+
