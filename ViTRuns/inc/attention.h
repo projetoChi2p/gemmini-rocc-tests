@@ -10,6 +10,6 @@ void attention(int hidden_dim, int expansion_dim, int num_heads, int seq_len,
         const elem_t * Wq, const elem_t * Wk, const elem_t * Wv, const elem_t * Wo,
         const acc_t * Wq_b, const acc_t * Wk_b, const acc_t * Wv_b, const acc_t * Wo_b,
         elem_t * Q_buf, elem_t * K_buf, elem_t * V_buf,
-        elem_t * attn_buf, elem_t * out_buf, acc_t * out_buf_acc);
+        elem_t * attn_buf, elem_t * out_buf, acc_t * out_buf_acc, float score_scaling_factor);
 
 #endif

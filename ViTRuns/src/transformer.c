@@ -16,7 +16,7 @@ uint64_t encoder_decoder(
         const acc_t * ff1_b, const acc_t * ff2_b,
         elem_t * Q_buf, elem_t * K_buf, elem_t * V_buf,
         elem_t * attn_buf, elem_t * out_buf, acc_t * out_buf_acc,
-        elem_t * resadd1_buf, elem_t * resadd2_buf)
+        elem_t * resadd1_buf, elem_t * resadd2_buf, float score_scaling_factor)
 {
     const bool is_encoder = enc_out == NULL;
     
@@ -47,7 +47,7 @@ uint64_t encoder_decoder(
             Wq, Wk, Wv, Wo,
             Wq_b, Wk_b, Wv_b, Wo_b,
             Q_buf, K_buf, V_buf,
-            attn_buf, out_buf, out_buf_acc);
+            attn_buf, out_buf, out_buf_acc, score_scaling_factor);
 
         // 2. Cross Attention (Decoder only)
         const elem_t * ffn_input = resadd1_buf;
@@ -59,7 +59,7 @@ uint64_t encoder_decoder(
                 Wq_cross, Wk_cross, Wv_cross, Wo_cross,
                 Wq_cross_b, Wk_cross_b, Wv_cross_b, Wo_cross_b,
                 Q_buf, K_buf, V_buf,
-                attn_buf, out_buf, out_buf_acc);
+                attn_buf, out_buf, out_buf_acc, score_scaling_factor);
             
             ffn_input = resadd2_buf;
         }

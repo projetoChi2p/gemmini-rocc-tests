@@ -16,6 +16,6 @@ uint64_t encoder_decoder(
         const acc_t * ff1_b, const acc_t * ff2_b,
         elem_t * Q_buf, elem_t * K_buf, elem_t * V_buf,
         elem_t * attn_buf, elem_t * out_buf, acc_t * out_buf_acc,
-        elem_t * resadd1_buf, elem_t * resadd2_buf);
+        elem_t * resadd1_buf, elem_t * resadd2_buf, float score_scaling_factor);
 
 #endif
