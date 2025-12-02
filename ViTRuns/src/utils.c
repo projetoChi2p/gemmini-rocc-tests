@@ -1,4 +1,8 @@
+#ifndef __VIT_UTILS__
+#define __VIT_UTILS__
+
 #include "../inc/utils.h"
+#include <float.h>
 #include <stdio.h>
 
 float gelu_exp_approx(float x) {
@@ -72,3 +76,73 @@ void print_results_summary(int total_samples, int correct_predictions, uint64_t 
     printf(" Avg Cycles/Inf    : %.0f\n", avg_cycles);
     printf("==========================================\n");
 }
+
+
+#ifdef DEBUG
+#define HIST_BAR_WIDTH 40
+#define HIST_BINS 7
+
+// Bins: [0-1e-6), [1e-6, 1e-5), [1e-5, 1e-4), [1e-4, 1e-3), [1e-3, 1e-2), [1e-2, 1e-1), [> 1e-1]
+const float BIN_THRESHOLDS[HIST_BINS] = {0.000001f, 0.00001f, 0.0001f, 0.001f, 0.01f, 0.1f, FLT_MAX};
+const char* BIN_LABELS[HIST_BINS]     = {"< 1e-6", "1e-6  ", "1e-5  ", "1e-4  ", "1e-3  ", "1e-2  ", "> 1e-1"};
+void print_error_histogram(const char * step_name, int rows, int cols, 
+                           const elem_t * calculated, const elem_t * expected) {
+    
+    int counts[HIST_BINS] = {0};
+    float max_diff = 0.0f;
+    float sum_diff = 0.0f;
+    int total_elements = rows * cols;
+    int errors_above_threshold = 0;
+    float threshold = 0.01f; // Threshold for "FAIL" judgement
+
+    // 1. Collect Stats
+    for (int i = 0; i < total_elements; i++) {
+        float c_val = (float)calculated[i];
+        float e_val = (float)expected[i];
+        float diff = fabs(c_val - e_val);
+
+        if (diff > max_diff) max_diff = diff;
+        sum_diff += diff;
+
+        if (diff > threshold) errors_above_threshold++;
+
+        // Binning
+        for (int b = 0; b < HIST_BINS; b++) {
+            if (diff < BIN_THRESHOLDS[b]) {
+                counts[b]++;
+                break;
+            }
+        }
+    }
+
+    float mae = sum_diff / total_elements;
+
+    // 2. Print Header
+    printf("\n=== DEBUG: %s ===\n", step_name);
+    printf("  Dims: %dx%d | Max Diff: %.6f | MAE: %.6f\n", rows, cols, max_diff, mae);
+    
+    // 3. Print Histogram
+    printf("  Error Distribution (Log Scale):\n");
+    for (int b = 0; b < HIST_BINS; b++) {
+        // Calculate bar length
+        int bar_len = (int)((float)counts[b] / total_elements * HIST_BAR_WIDTH);
+        
+        printf("    %s : ", BIN_LABELS[b]);
+        for (int k = 0; k < bar_len; k++) printf("#");
+        if (counts[b] > 0 && bar_len == 0) printf("."); // Dot for non-zero but small count
+        
+        // Print count and percentage
+        printf(" (%d - %.1f%%)\n", counts[b], (float)counts[b]/total_elements * 100.0f);
+    }
+
+    // 4. Final Judgement
+    if (errors_above_threshold > 0) {
+        printf("  [FAIL] %d elements have errors > %.2f\n", errors_above_threshold, threshold);
+    } else {
+        printf("  [PASS] All errors within tolerance.\n");
+    }
+    printf("--------------------------------------------------\n");
+}
+#endif // DEBUG
+
+#endif // __VIT_UTILS__
