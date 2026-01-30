@@ -5,6 +5,11 @@
 
 #undef abs
 
+#define BERT_SCALE_VALUE 0.8
+#define HAS_NORMALIZATIONS
+#define NORM_STAT_IDS 4
+#define HAS_ACTIVATIVATIONS
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -84,6 +89,16 @@ static elem_t elem_t_bits_to_elem_t(elem_t_bits x) {
     } un;
 
     un.b = x;
+    return un.f;
+}
+
+elem_t_bits elem_t_to_floats(elem_t x) {
+    union {
+        elem_t_bits b;
+        elem_t f;
+    } un;
+
+    un.f = x;
     return un.f;
 }
 
@@ -762,6 +777,8 @@ static void tiled_matmul_outer(size_t dim_I, size_t dim_J, size_t dim_K,
   gemmini_extended3_config_ld(repeating_bias ? 0 : (stride_D * sizeof_D), D_scale_factor, low_D, 2);
 
   if (act == IGELU) {
+    bert_scale = BERT_SCALE_VALUE;
+
     const acc_scale_t sqrt_2 = 1.41421356237;
     const acc_scale_t S = bert_scale;
     const acc_scale_t S_erf = (-0.2888 * ((S*S) / 2));
@@ -776,6 +793,8 @@ static void tiled_matmul_outer(size_t dim_I, size_t dim_J, size_t dim_K,
     const scale_t a = 0.3585;
     const scale_t b = 1.353;
     const scale_t c = 0.344;
+
+    bert_scale = BERT_SCALE_VALUE;
 
     const acc_t qln2 = (int) (0.693147 / bert_scale);
     const acc_t qln2_inv = 65536 / qln2;
@@ -879,7 +898,7 @@ static elem_t scale_and_sat(acc_t x, int act, acc_scale_t scale, acc_scale_t ber
   // Apply I-GELU if needed
   if (act == IGELU) {
     const acc_scale_t sqrt_2 = 1.41421356237;
-
+    bert_scale = BERT_SCALE_VALUE;
     const acc_scale_t S = bert_scale;
 
     const acc_scale_t S_erf = (-0.2888 * (S/sqrt_2)*(S/sqrt_2));
@@ -1059,61 +1078,85 @@ static void matmul_cpu(bool transA, bool transB, size_t DIM_I, size_t DIM_J, siz
 
 #ifdef HAS_NORMALIZATIONS
       if (act == LAYERNORM) {
-        acc_t sum = 0;
-        for (size_t j = 0; j < DIM_J; j++)
-          sum += c_buffer[j];
-        acc_t mean = sum / (acc_t)DIM_J;
-
-        acc_t total_err_sq = 0;
-        for (size_t j = 0; j < DIM_J; j++)
-          total_err_sq += (c_buffer[j] - mean)*(c_buffer[j] - mean);
-        acc_t variance = total_err_sq / (acc_t)DIM_J;
-
-        acc_t stddev = int_sqrt(variance);
-        if (variance == 0) stddev = 1;
-
+        /* Compute mean & variance in double for numeric stability */
+        double mean = 0.0;
         for (size_t j = 0; j < DIM_J; j++) {
-          c_buffer[j] -= mean;
-          // c_buffer[j] /= stddev;
-          c_buffer[j] = ROUND_NEAR_EVEN((double)c_buffer[j] / stddev); // TODO I don't think I-BERT uses round-near-even, so we shouldn't either. We just use this rounding mode here in order to match the hardware.
+          mean += (double)c_buffer[j];
+        }
+        mean /= (double)DIM_J;
+
+        double var = 0.0;
+        for (size_t j = 0; j < DIM_J; j++) {
+          double d = (double)c_buffer[j] - mean;
+          var += d * d;
+        }
+        var /= (double)DIM_J;
+
+        double stddev = sqrt(var);
+        if (stddev == 0.0) stddev = 1.0;
+
+        /* Normalize and write back */
+        for (size_t j = 0; j < DIM_J; j++) {
+          double normalized = ((double)c_buffer[j] - mean) / stddev;
+
+          /* Convert normalized FP value into accumulator units before scale_and_sat.
+             Under the assumption that bert_scale means "acc units per 1.0 real":
+             acc_value = round(normalized * bert_scale)
+             If your bert_scale convention is different, change this conversion. */
+          acc_t acc_val = (acc_t) llround(normalized * (double)bert_scale); // <-- conversion to acc_t
 
           elem_t* c = C + (i * stride_C) + j;
-          *c = scale_and_sat(c_buffer[j], act, scale, bert_scale);
+          *c = scale_and_sat(acc_val, act, scale, bert_scale);
         }
-      } else if (act == SOFTMAX) {
-        const scale_t a = 0.3585;
-        const scale_t b = 1.353;
-        const scale_t c = 0.344;
+        } else if (act == SOFTMAX) {
+          // -------- FP32 softmax WITHOUT exp() ------------
+          // Polynomial approximation: exp(x) ≈ 1 + x + x^2/2 + x^3/6 + x^4/24 + x^5/120
 
-        // is SCALE supposed to be input scale?
-        const acc_t qln2 = (acc_t) (0.693147 / bert_scale);
-        const acc_t qln2_inv = 65536 / qln2;
-        const acc_t qb = b / bert_scale;
-        const acc_t qc = c / (a*bert_scale*bert_scale);
+          double maxv = -1e30;
+          for (size_t j = 0; j < DIM_J; j++) {
+              double v = (double)c_buffer[j] / (double)bert_scale; // convert acc → float
+              if (v > maxv) maxv = v;
+          }
 
-        // pass 1: get max_q
-        acc_t max_q = -2147483648;
-        for (size_t j = 0; j < DIM_J; j++) {
-          if (c_buffer[j] > max_q) max_q = c_buffer[j];
-        }
+          // Compute exponentials
+          double exps[1024];
+          double sum_exp = 0.0;
 
-        // pass 2: calculate iexp(q_tilde) and sum(q_tilde)
-        acc_t sum_exp = 0;
-        for (size_t j = 0; j < DIM_J; j++) {
-          acc_t q = c_buffer[j] - max_q;
-          acc_t z = (acc_t) (-q * qln2_inv) >> 16;
-          acc_t qp = q + z * qln2;
-          acc_t q_exp = (qp + qb)*(qp + qb) + qc;
-          c_buffer[j] = q_exp >> z;
-          sum_exp += c_buffer[j];
-        }
+          for (size_t j = 0; j < DIM_J; j++) {
+              double real = (double)c_buffer[j] / (double)bert_scale;
+              double x = real - maxv;
 
-        // pass 3: divide by sum
-        scale_t factor = (127.f) / (float) sum_exp; // what corresponds to 1 in output?
-        for (size_t j = 0; j < DIM_J; j++) {
-          elem_t* c = C + (i * stride_C) + j;
-          *c = scale_and_sat(c_buffer[j], act, factor, bert_scale);
-        }
+              // Clamp range for numerical stability
+              if (x < -10.0) x = -10.0;
+              if (x >  0.0)  x = 0.0;
+
+              double x2 = x * x;
+              double x3 = x2 * x;
+              double x4 = x3 * x;
+              double x5 = x4 * x;
+
+              double e =
+                  1.0 +
+                  x +
+                  x2 * 0.5 +
+                  x3 * (1.0 / 6.0) +
+                  x4 * (1.0 / 24.0) +
+                  x5 * (1.0 / 120.0);
+
+              exps[j] = e;
+              sum_exp += e;
+          }
+
+          // Convert probabilities back → accumulator → elem_t
+          for (size_t j = 0; j < DIM_J; j++) {
+              double prob = exps[j] / sum_exp;
+
+              // convert float prob → accumulator units
+              acc_t acc_val = (acc_t)llround(prob * (double)bert_scale);
+
+              elem_t* c = C + (i * stride_C) + j;
+              *c = scale_and_sat(acc_val, act, scale, bert_scale);
+          }
       }
 #endif
     }
@@ -3551,7 +3594,7 @@ static void tiled_norm(const size_t I, const size_t J,
         const scale_t c = 0.344;
 
         // TODO let bert-scale be set by the programmer
-        acc_scale_t bert_scale = 0.05;
+        acc_scale_t bert_scale = 0.25;
         const acc_t qln2 = (int) (0.693147 / bert_scale);
         const acc_t qln2_inv = 65536 / qln2;
         const acc_t qb = b / bert_scale;
