@@ -16,7 +16,7 @@ int global_layer_index = 0;
 #include "include/gemmini_nn.h"
 
 // Model Parameters (Ensure this matches the quantization export)
-#include "includes/minivit_mnist_quant_params.h" 
+#include "includes/deitvit_cifar10_quant_params.h" 
 
 // Include the verified source modules directly
 // (In a real build system, compile these separately and link. 
@@ -95,6 +95,7 @@ int main (int argc, char * argv[]) {
             patch_embed_w, patch_embed_b,
             SCALE_EMBED,
             pos_embed_data, cls_token_data,
+            dist_token_data,
             (elem_t*)temp_patch_buf,
             (elem_t*)encoder_input
         );
@@ -159,12 +160,13 @@ int main (int argc, char * argv[]) {
         // Wait, the loop writes to 'out', sets 'layer_in' = 'out'.
         // So yes, 'encoder_output' holds the final result.
         
-        classifier_head_quantized(
-            TOTAL_SEQ_LEN, HIDDEN_DIM, NUM_CLASSES,
+        classifier_head_deit_quantized(
+            HIDDEN_DIM, NUM_CLASSES,
             (elem_t*)encoder_output, 
             (elem_t*)final_logits,
             head_w, head_b,
-            SCALE_HEAD
+            SCALE_HEAD,
+            head_dist_w, head_dist_b
         );
 
         if (i == 0) {
