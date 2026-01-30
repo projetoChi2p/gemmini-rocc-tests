@@ -6,6 +6,8 @@
 #include <sys/mman.h>
 #endif
 
+#define ELEM_T_DEFINED
+
 //#define DEBUG_STEPS
 //#define SINGLE_EXECUTION
 
@@ -18,8 +20,8 @@
 #include "include/gemmini_nn.h"
 
 // Weights and Params
-//#include "includes/minivit_mnist_params.h" 
-#include "includes/minivit_mnist_debug_params.h" 
+#include "includes/minivit_mnist_params.h" 
+//#include "includes/minivit_cifar100_params.h" 
 
 #ifdef SINGLE_EXECUTION
     #undef NUM_INFERENCES
@@ -29,7 +31,7 @@
 // --- NEW: Verification Helper ---
 #define VERIFY_EPSILON 1.0f
 
-void verify_matrix(const char * step_name, int rows, int cols, 
+void verify_matrix_custom(const char * step_name, int rows, int cols, 
                    const elem_t * calculated, const elem_t * expected) {
     // Only run verification if we have expected values
     if (expected == NULL) return;
@@ -110,6 +112,7 @@ int main (int argc, char * argv[]) {
     printf("Running %d inferences...\n", NUM_INFERENCES);
 
     int correct_predictions = 0;
+    int top5_correct_predictions = 0;
     uint64_t total_cycles = 0;
 
     // === INFERENCE LOOP ===
@@ -221,8 +224,8 @@ int main (int argc, char * argv[]) {
         if (is_debug_iter) {
             // Verify Global Pool (If your compute_classification_head does pooling)
             // Note: The debug header has debug_global_pool_out, debug_final_ln_out, debug_final_logits
-            verify_matrix("Final LayerNorm", 1, HIDDEN_DIM, (elem_t*)ln_out, debug_final_ln_out);
-            verify_matrix("Final Logits", 1, OUTPUT_SIZE, (elem_t*)final_logits, debug_final_logits);
+            verify_matrix_custom("Final LayerNorm", 1, HIDDEN_DIM, (elem_t*)ln_out, debug_final_ln_out);
+            verify_matrix_custom("Final Logits", 1, OUTPUT_SIZE, (elem_t*)final_logits, debug_final_logits);
         }
         #endif
 
@@ -237,6 +240,11 @@ int main (int argc, char * argv[]) {
         if (prediction == current_ground_truth) {
             correct_predictions++;
         }
+
+        // Check Top-5 (New Logic)
+        if (is_in_top_k((elem_t*)final_logits, OUTPUT_SIZE, current_ground_truth, 3)) {
+            top5_correct_predictions++; // Make sure to declare this variable at start of main
+        }
         
         if ((i + 1) % 100 == 0) {
             printf("Processed %d / %d samples...\n", i + 1, NUM_INFERENCES);
@@ -244,7 +252,7 @@ int main (int argc, char * argv[]) {
     } 
 
     // === REPORTING ===
-    print_results_summary(NUM_INFERENCES, correct_predictions, total_cycles);
+    print_results_summary(NUM_INFERENCES, correct_predictions, top5_correct_predictions, total_cycles);
 
     return 0;
 }
