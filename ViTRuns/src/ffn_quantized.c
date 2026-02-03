@@ -42,8 +42,8 @@ void cpu_gelu_quantized(int rows, int cols, elem_t * input, elem_t * output) {
     
     // Heuristic: Input Int8 range maps to approx [-6.0, 6.0]
     const float range_max = 6.0f;
-    const float input_scale = range_max / 127.0f; 
-    const float output_scale = 127.0f / range_max; 
+    const float input_scale = range_max / (float) elem_t_max ; 
+    const float output_scale = (float) elem_t_max / range_max; 
 
     int size = rows * cols;
     for (int i = 0; i < size; i++) {
@@ -56,8 +56,8 @@ void cpu_gelu_quantized(int rows, int cols, elem_t * input, elem_t * output) {
         
         // Re-quantize
         int out_val = my_round_ffn(res * output_scale);
-        if (out_val > 127) out_val = 127;
-        if (out_val < -128) out_val = -128;
+        if (out_val > elem_t_max) out_val = elem_t_max;
+        if (out_val < elem_t_min) out_val = elem_t_min;
         
         output[i] = (elem_t)out_val;
     }
@@ -87,8 +87,8 @@ void cpu_layernorm_quantized(int rows, int cols, elem_t * data) {
             // Use explicit rounding helper
             int res = my_round_ffn(n);
             
-            if(res > 127) res=127; 
-            if(res < -128) res=-128;
+            if(res > elem_t_max) res=elem_t_max; 
+            if(res < elem_t_min) res=elem_t_min;
             data[i*cols+j] = (elem_t)res;
         }
     }
