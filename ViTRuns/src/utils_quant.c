@@ -74,4 +74,63 @@ int find_max_index(elem_t * scores, int size) {
     return max_idx;
 }
 
+
+void print_results_summary(int total_samples, int correct_predictions, int top3_correct_predictions, int top5_correct_predictions, uint64_t total_cycles) {
+    double accuracy = (double)correct_predictions / total_samples * 100.0;
+    double accuracy_top3 = (double)top3_correct_predictions / total_samples * 100.0;
+    double accuracy_top5 = (double)top5_correct_predictions / total_samples * 100.0;
+    double avg_cycles = (double)total_cycles / total_samples;
+
+    printf("\n==========================================\n");
+    printf("       INFERENCE RESULTS SUMMARY          \n");
+    printf("==========================================\n");
+    printf(" Total Samples     : %d\n", total_samples);
+    printf(" Correct Predictions: %d\n", correct_predictions);
+    printf(" Top-3 Predictions: %d\n", top3_correct_predictions);
+    printf(" Top-5 Predictions: %d\n", top5_correct_predictions);
+    
+#ifdef ELEM_T_IS_FLOAT
+    printf(" Accuracy          : %.2f%%\n", accuracy);
+#else
+    printf(" Accuracy          : %d%%\n", (int)accuracy);
+#endif
+    // === REPORTING ===
+    printf("\n--- Results ---\n");
+    printf("Top-1 Accuracy: (%d/%d)\n", 
+            correct_predictions, NUM_INFERENCES);
+
+    printf("Top-3 Accuracy: (%d/%d)\n", 
+            top3_correct_predictions, NUM_INFERENCES);
+           
+    printf("Top-5 Accuracy: (%d/%d)\n", 
+            top5_correct_predictions, NUM_INFERENCES);
+
+    printf("------------------------------------------\n");
+    printf(" Total Cycles      : %llu\n", total_cycles);
+    printf(" Avg Cycles/Inf    : %.0f\n", avg_cycles);
+    printf("==========================================\n");
+}
+
+int is_in_top_k(elem_t* arr, int size, int target_idx, int k) {
+    elem_t target_score = arr[target_idx];
+    int count_greater = 0;
+
+    for (int i = 0; i < size; i++) {
+        if (i == target_idx) continue; // Skip comparing with itself
+
+        // If another class has a strictly higher score, increment count
+        if (arr[i] > target_score) {
+            count_greater++;
+        }
+        
+        // Optimization: If we already found k elements bigger, it's definitely not top-k
+        if (count_greater >= k) {
+            return 0; // False
+        }
+    }
+
+    // If fewer than k items are larger, then target is in the top k
+    return 1; // True
+}
+
 #endif

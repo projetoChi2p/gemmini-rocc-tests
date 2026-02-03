@@ -9,6 +9,9 @@
 //#define DEBUG
 #define TOLERANCE 1
 
+#define CPU_LAYERNORM
+#define CPU_SOFTMAX
+
 int global_layer_index = 0;
 
 // Gemmini Headers
@@ -16,7 +19,11 @@ int global_layer_index = 0;
 #include "include/gemmini_nn.h"
 
 // Model Parameters (Ensure this matches the quantization export)
-#include "includes/deitvit_cifar10_quant_params.h" 
+
+//#include "includes/deitvit_cifar100_quant_params.h" 
+//#include "includes/deitvit_cifar10_quant_params.h" 
+//#include "includes/deitvit_mnist_quant_params.h" 
+#include "includes/minivit_mnist_quant_params.h"
 
 // Include the verified source modules directly
 // (In a real build system, compile these separately and link. 
@@ -26,6 +33,8 @@ int global_layer_index = 0;
 #include "src/embedding_quantized.c"       // From Brick 6
 #include "src/classifier_quantized.c" // From Brick 7
 #include "src/transformer_quantized.c" // From Final Integration
+
+#include "src/utils_quant.c"            // Verification Helper
 
 // ==========================================
 // STATIC BUFFERS (Global to avoid Stack Overflow)
@@ -48,6 +57,7 @@ static elem_t V_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
 static elem_t attn_buf[NUM_HEADS][TOTAL_SEQ_LEN][TOTAL_SEQ_LEN] row_align(1);
 static elem_t out_buf[TOTAL_SEQ_LEN][EXPANSION_DIM] row_align(1); // Max size needed
 static elem_t resadd1_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
+static elem_t ln_output_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
 static elem_t resadd2_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
 
 // 4. Output Buffers
@@ -73,6 +83,8 @@ int main (int argc, char * argv[]) {
             SEQ_LEN, HIDDEN_DIM, NUM_HEADS, ENCODER_LAYERS);
            
     int correct_predictions = 0;
+    int top3_correct_predictions = 0;
+    int top5_correct_predictions = 0;
     uint64_t total_cycles = 0;
     int num_inferences = NUM_INFERENCES; // Defined in header
 
@@ -95,7 +107,9 @@ int main (int argc, char * argv[]) {
             patch_embed_w, patch_embed_b,
             SCALE_EMBED,
             pos_embed_data, cls_token_data,
-            dist_token_data,
+            #ifdef DISTILLATION
+                dist_token_data,
+            #endif
             (elem_t*)temp_patch_buf,
             (elem_t*)encoder_input
         );
@@ -128,6 +142,7 @@ int main (int argc, char * argv[]) {
             (elem_t*)Q_buf, (elem_t*)K_buf, (elem_t*)V_buf,
             (elem_t*)attn_buf, (elem_t*)out_buf,
             (elem_t*)resadd1_buf, (elem_t*)resadd2_buf,
+            (elem_t*)ln_output_buf,
             
             SCORE_SCALING_FACTOR,
             
@@ -165,8 +180,11 @@ int main (int argc, char * argv[]) {
             (elem_t*)encoder_output, 
             (elem_t*)final_logits,
             head_w, head_b,
-            SCALE_HEAD,
-            head_dist_w, head_dist_b
+            SCALE_HEAD
+            #ifdef DISTILLATION
+                ,    
+                head_dist_w, head_dist_b
+            #endif
         );
 
         if (i == 0) {
@@ -190,6 +208,14 @@ int main (int argc, char * argv[]) {
         if (prediction == ground_truth) {
             correct_predictions++;
         }
+        if (is_in_top_k((elem_t*)final_logits, NUM_CLASSES, ground_truth, 3)) {
+            // For Top-3 accuracy (if needed)
+            top3_correct_predictions++;
+        }   
+        if (is_in_top_k((elem_t*)final_logits, NUM_CLASSES, ground_truth, 5)) {
+            // For Top-5 accuracy (if needed)
+            top5_correct_predictions++;
+        }   
         
         if ((i+1) % 10 == 0) {
             printf("Processed %d/%d. Correct: %d/%d\n", i+1, num_inferences, 
@@ -197,10 +223,12 @@ int main (int argc, char * argv[]) {
         }
     }
 
-    printf("\n=== FINAL RESULTS ===\n");
+    /*printf("\n=== FINAL RESULTS ===\n");
     printf("Accuracy:%d/%d\n", 
           correct_predictions, num_inferences);
-    printf("Avg Cycles: %llu\n", total_cycles / num_inferences);
+    printf("Avg Cycles: %llu\n", total_cycles / num_inferences);*/
+
+    print_results_summary(num_inferences, correct_predictions, top3_correct_predictions, top5_correct_predictions, total_cycles);
 
     return 0;
 }

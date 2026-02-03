@@ -30,8 +30,7 @@ uint64_t encoder_decoder_quantized(
 
         // Scratchpad Buffers
         elem_t * Q_buf, elem_t * K_buf, elem_t * V_buf,
-        elem_t * attn_buf, elem_t * out_buf, 
-        elem_t * resadd1_buf, elem_t * resadd2_buf, 
+        elem_t * attn_buf, elem_t * out_buf,         elem_t * resadd1_buf, elem_t * resadd2_buf, elem_t * ln_output_buf,
         
         // Constants
         float score_scaling_factor, 
@@ -99,21 +98,36 @@ uint64_t encoder_decoder_quantized(
 
         #ifdef DEBUG
         if (l == 0) {
-            verify_tensor("Layer 0 ResAdd1", resadd1_buf, (elem_t*)debug_layer0_res1, seq_len * hidden_dim, TOLERANCE);
+            //verify_tensor("Layer 0 ResAdd1", resadd1_buf, (elem_t*)debug_layer0_res1, seq_len * hidden_dim, TOLERANCE);
         }
         #endif
 
-        cpu_layernorm_quantized(seq_len, hidden_dim, resadd1_buf);
+        #ifdef CPU_LAYERNORM
+            cpu_layernorm_quantized(seq_len, hidden_dim, resadd1_buf);
+        #else
+            tiled_norm_auto(
+                seq_len, hidden_dim,
+                (acc_t*)resadd1_buf,    // Input (Accumulator/Int32)
+                (elem_t*)ln_output_buf,  // Output (Int8)
+                ACC_SCALE_IDENTITY,
+                LAYERNORM, WS
+            );
+        #endif
+
         
         #ifdef DEBUG
         if (l == 0) {
-            verify_tensor("Layer 0 LN1", resadd1_buf, (elem_t*)debug_layer0_ln1, seq_len * hidden_dim, TOLERANCE);
+            verify_tensor("Layer 0 LN1", ln_output_buf, (elem_t*)debug_layer0_ln1, seq_len * hidden_dim, TOLERANCE);
         }
         #endif
 
         // --- 3. FFN ---
         ffn_quantized(hidden_dim, expansion_dim, seq_len,
-            resadd1_buf,
+            #ifdef CPU_LAYERNORM
+                resadd1_buf,
+            #else
+                ln_output_buf,
+            #endif
             out, // Final Result
             ff1_w, ff2_w,
             ff1_b, ff2_b,

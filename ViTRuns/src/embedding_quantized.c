@@ -15,7 +15,9 @@ void compute_patch_embeddings_quantized(
     float scale_embed,              
     const elem_t * pos_embed_data, 
     const elem_t * cls_token_data,
-    const elem_t * dist_token,      // [1, Hidden] (NEW: Optional)
+    #ifdef DISTILLATION
+        const elem_t * dist_token,      // [1, Hidden] (NEW: Optional)
+    #endif
     elem_t * temp_patch_buf,       
     elem_t * final_input_buf
     )      
@@ -44,10 +46,12 @@ void compute_patch_embeddings_quantized(
     }
 
     // B. Copy Distillation Token (Index 1) - NEW
+    #ifdef DISTILLATION
     if (dist_token != NULL) {
         memcpy(final_input_buf + (current_idx * hidden_dim), dist_token, row_size);
         current_idx++;
     } 
+    #endif
 
     // C. Copy Projected Patches (Indices 1+ or 2+)
     // We copy from temp_patch_buf to the current position in final_input_buf

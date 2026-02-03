@@ -182,5 +182,15 @@ void ffn_quantized(
 
     // --- 5. LayerNorm ---
     // Post-Norm: Output = LN(Output)
-    cpu_layernorm_quantized(seq_len, hidden_dim, out);
+    #ifdef CPU_LAYERNORM
+        cpu_layernorm_quantized(seq_len, hidden_dim, out);
+    #else
+        tiled_norm_auto(
+            seq_len, hidden_dim, 
+            (acc_t*)out,    // Input (Accumulator/Int32)
+            (elem_t*)out,  // Output (Int8)
+            ACC_SCALE_IDENTITY,
+            LAYERNORM, WS
+        );
+    #endif
 }

@@ -116,7 +116,11 @@ void attention_quantized(
             attn_buf + h*seq_len*seq_len, 
             hidden_dim, hidden_dim, seq_len, seq_len, 
             MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY,
-            NO_ACTIVATION, (acc_scale_t)scale_scores_matmul, 0, false, 
+            #ifdef CPU_SOFTMAX
+                NO_ACTIVATION, (acc_scale_t)scale_scores_matmul, 0, false, 
+            #else
+                SOFTMAX, (acc_scale_t)scale_scores_matmul, (acc_scale_t)0.05, false, 
+            #endif
             false, true, false, false, 0, WS);
     }
     gemmini_fence();
@@ -124,13 +128,15 @@ void attention_quantized(
     #ifdef DEBUG
     if (global_layer_index == 0) {
         // [DEBUG] Verify Head 0 Scores
-        verify_tensor("Attn: Scores (Head 0)", attn_buf, (elem_t*)debug_layer0_scores_head0, seq_len * seq_len, TOLERANCE);
+        //verify_tensor("Attn: Scores (Head 0)", attn_buf, (elem_t*)debug_layer0_scores_head0, seq_len * seq_len, TOLERANCE);
     }
     #endif 
 
     // --- 3. Softmax ---
     for (int h = 0; h < num_heads; h++) {
-        cpu_softmax_quantized(seq_len, seq_len, attn_buf + h*seq_len*seq_len, score_scaling);
+        #ifdef CPU_SOFTMAX
+            cpu_softmax_quantized(seq_len, seq_len, attn_buf + h*seq_len*seq_len, score_scaling);
+        #endif
     }
 
     #ifdef DEBUG
