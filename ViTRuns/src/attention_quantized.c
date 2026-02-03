@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 
+
 #include "include/gemmini.h"
 #include "include/gemmini_nn.h"
 
@@ -96,7 +97,7 @@ void attention_quantized(
     gemmini_fence();
 
     #ifdef DEBUG
-    if (global_layer_index == 0) {
+    if (global_layer_index == 0 && debug_inference) {
         // [DEBUG] Verify Q, K, V (Assuming Layer 0 arrays are available)
         // Note: This verifies ONLY if we are in Layer 0. 
         // Ideally, pass a 'layer_idx' arg, or we rely on the caller to enable/disable via DEBUG macro
@@ -126,7 +127,7 @@ void attention_quantized(
     gemmini_fence();
 
     #ifdef DEBUG
-    if (global_layer_index == 0) {
+    if (global_layer_index == 0 && debug_inference) {
         // [DEBUG] Verify Head 0 Scores
         //verify_tensor("Attn: Scores (Head 0)", attn_buf, (elem_t*)debug_layer0_scores_head0, seq_len * seq_len, TOLERANCE);
     }
@@ -140,7 +141,7 @@ void attention_quantized(
     }
 
     #ifdef DEBUG
-    if (global_layer_index == 0) {
+    if (global_layer_index == 0 && debug_inference) {
         // [DEBUG] Verify Head 0 Probs
         verify_tensor("Attn: Probs (Head 0)", attn_buf, (elem_t*)debug_layer0_probs_head0, seq_len * seq_len, TOLERANCE);
     }
@@ -163,7 +164,7 @@ void attention_quantized(
     gemmini_fence();
 
     #ifdef DEBUG
-    if (global_layer_index == 0) {
+    if (global_layer_index == 0 && debug_inference) {
         // [DEBUG] Verify Head 0 Context
         // Note: out_buf holds interleaved heads [Seq, Hidden]. Head 0 is at offset 0, 64, 128...
         // The debug tensor is packed [Seq, HeadDim]. Stride verification needed.

@@ -98,7 +98,6 @@ void cpu_layernorm_quantized(int rows, int cols, elem_t * data) {
 // 3. FFN MODULE IMPLEMENTATION
 // ==========================================
 
-
 void ffn_quantized(
     int hidden_dim, 
     int expansion_dim, 
@@ -128,7 +127,7 @@ void ffn_quantized(
     );
 
     #ifdef DEBUG
-    if (global_layer_index == 0) {
+    if (global_layer_index == 0 && debug_inference) {
     // FIX: Size is Seq * Expansion (not Hidden)
     verify_tensor("Layer 0 FC1", out_buf, (elem_t*)debug_layer0_fc1, seq_len * expansion_dim, TOLERANCE);
     }
@@ -141,7 +140,7 @@ void ffn_quantized(
 
     
     #ifdef DEBUG
-    if (global_layer_index == 0) {
+    if (global_layer_index == 0 && debug_inference) {
     // FIX: Size is Seq * Expansion
     verify_tensor("Layer 0 GELU", out_buf, (elem_t*)debug_layer0_gelu, seq_len * expansion_dim, TOLERANCE);
     }
@@ -163,7 +162,7 @@ void ffn_quantized(
     );
 
     #ifdef DEBUG
-    if (global_layer_index == 0) {
+    if (global_layer_index == 0 && debug_inference) {
     // Size is Seq * Hidden (Correct)
     verify_tensor("Layer 0 FC2", out, (elem_t*)debug_layer0_fc2, seq_len * hidden_dim, TOLERANCE);
     }

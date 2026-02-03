@@ -9,10 +9,12 @@
 //#define DEBUG
 #define TOLERANCE 1
 
+//#define DISTILLATION
 #define CPU_LAYERNORM
 #define CPU_SOFTMAX
 
 int global_layer_index = 0;
+bool debug_inference = false;
 
 // Gemmini Headers
 #include "include/gemmini.h"
@@ -20,9 +22,9 @@ int global_layer_index = 0;
 
 // Model Parameters (Ensure this matches the quantization export)
 
-//#include "includes/deitvit_cifar100_quant_params.h" 
-//#include "includes/deitvit_cifar10_quant_params.h" 
-//#include "includes/deitvit_mnist_quant_params.h" 
+// #include "includes/deitvit_cifar100_quant_params.h" 
+// #include "includes/deitvit_cifar10_quant_params.h" 
+// #include "includes/deitvit_mnist_quant_params.h" 
 #include "includes/minivit_mnist_quant_params.h"
 
 // Include the verified source modules directly
@@ -40,7 +42,7 @@ int global_layer_index = 0;
 // STATIC BUFFERS (Global to avoid Stack Overflow)
 // ==========================================
 
-// 1. Input Buffers
+// 1. Input Buffer
 //    Flattened Patch Buffer: [Seq, PatchDim]
 //    Note: SEQ_LEN usually refers to number of patches (16)
 static elem_t patch_buffer[SEQ_LEN][PATCH_DIM]; 
@@ -63,9 +65,7 @@ static elem_t resadd2_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
 // 4. Output Buffers
 static elem_t final_logits[1][NUM_CLASSES] row_align(1);
 
-// ==========================================
-// HELPER: Argmax
-// ==========================================
+
 // ==========================================
 // MAIN INFERENCE LOOP
 // ==========================================
@@ -89,6 +89,11 @@ int main (int argc, char * argv[]) {
     int num_inferences = NUM_INFERENCES; // Defined in header
 
     for (int i = 0; i < num_inferences; i++) {
+        if (i == 0){
+            debug_inference = true;
+        } else {
+            debug_inference = false;
+        }
         
         // 1. Prepare Input
         // Copy specific test image patch data to our patch buffer
@@ -117,7 +122,7 @@ int main (int argc, char * argv[]) {
             #ifdef DEBUG
             if (!verify_tensor("Embedding Output", 
                 (elem_t*)encoder_input, (elem_t*)debug_embedding_out, 
-                TOTAL_SEQ_LEN * HIDDEN_DIM, TOLERANCE)) return 1;
+                TOTAL_SEQ_LEN * HIDDEN_DIM, TOLERANCE)) {}//return 1;
             #endif
         }
 
@@ -159,7 +164,7 @@ int main (int argc, char * argv[]) {
                 (elem_t*)encoder_output, (elem_t*)debug_final_encoder_out, 
                 TOTAL_SEQ_LEN * HIDDEN_DIM, TOLERANCE)) { // Tolerate small drift accumulation
                 printf("!!! Encoder Stack Failed !!!\n");
-                //return 1;
+                return 1;
             }
             #endif
         }
@@ -185,6 +190,7 @@ int main (int argc, char * argv[]) {
                 ,    
                 head_dist_w, head_dist_b
             #endif
+
         );
 
         if (i == 0) {

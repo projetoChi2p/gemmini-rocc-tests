@@ -6,6 +6,8 @@
 
 // Include verification helper
 #include "utils_quant.c"
+//#include "math_quant.c"
+
 uint64_t encoder_decoder_quantized(
         // Dimensions
         int hidden_dim, int expansion_dim, int num_heads, int cross_num_heads,
@@ -63,7 +65,9 @@ uint64_t encoder_decoder_quantized(
         global_layer_index = l;
         
         #ifdef DEBUG
-        printf("\n=== Layer %d Start ===\n", l);
+        if (l == 0 && debug_inference) {
+            printf("\n=== Layer %d Start ===\n", l);
+        }
         #endif
 
         gemmini_fence(); 
@@ -80,7 +84,7 @@ uint64_t encoder_decoder_quantized(
         );
 
         #ifdef DEBUG
-        if (l == 0) {
+        if (l == 0 && debug_inference) {
             verify_tensor("Layer 0 Q", Q_buf, (elem_t*)debug_layer0_q, seq_len * hidden_dim, TOLERANCE);
             verify_tensor("Layer 0 Wo Proj", out_buf, (elem_t*)debug_layer0_proj, seq_len * hidden_dim, TOLERANCE);
         }
@@ -97,7 +101,7 @@ uint64_t encoder_decoder_quantized(
         gemmini_fence();
 
         #ifdef DEBUG
-        if (l == 0) {
+        if (l == 0 && debug_inference) {
             //verify_tensor("Layer 0 ResAdd1", resadd1_buf, (elem_t*)debug_layer0_res1, seq_len * hidden_dim, TOLERANCE);
         }
         #endif
@@ -116,7 +120,7 @@ uint64_t encoder_decoder_quantized(
 
         
         #ifdef DEBUG
-        if (l == 0) {
+        if (l == 0 && debug_inference) {
             verify_tensor("Layer 0 LN1", ln_output_buf, (elem_t*)debug_layer0_ln1, seq_len * hidden_dim, TOLERANCE);
         }
         #endif
@@ -136,12 +140,12 @@ uint64_t encoder_decoder_quantized(
         );
 
         #ifdef DEBUG
-        if (l == 0) {
+        if (l == 0 && debug_inference) {
             // FIX: Check 'out', not 'out_buf'
             verify_tensor("Layer 0 Out", out, (elem_t*)debug_layer0_out, seq_len * hidden_dim, TOLERANCE);
+            
         }
         #endif
-
         // --- 4. Advance Pointers ---
         Wq += stride_W_attn; Wk += stride_W_attn; Wv += stride_W_attn; 
         Wo += stride_Wo_attn; 
@@ -156,6 +160,7 @@ uint64_t encoder_decoder_quantized(
         layer_in = out;
 
         gemmini_fence();
+        
     }
 
     uint64_t end = read_cycles();

@@ -22,6 +22,7 @@ void compute_patch_embeddings_quantized(
     elem_t * final_input_buf
     )      
 {
+
     // 1. Project Patches (Input -> Temp Buffer)
     // No changes here
     tiled_matmul_auto(patch_seq_len, hidden_dim, patch_dim,

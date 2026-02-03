@@ -45,15 +45,15 @@ void cpu_layernorm_cls(elem_t * cls_token, int dim) {
 
 void classifier_head_deit_quantized(
     int hidden_dim, int num_classes,
-    const elem_t * encoder_output, // [Total_Seq, Hidden]
-    elem_t * final_logits,         // [1, Classes]
-    const elem_t * w, const acc_t * b, float scale // CLS Head Weights
+    const elem_t * encoder_output, 
+    elem_t * final_logits,         
+    const elem_t * w, const acc_t * b, float scale
     #ifdef DISTILLATION
         ,
-        const elem_t * w_d, const acc_t * b_d           // Dist Head Weights
+        const elem_t * w_d, const acc_t * b_d
     #endif
 ) {
-    // Buffers for LayerNorm and Logits
+    // Buffers
     static elem_t cls_buf[512];
     static elem_t logits_cls[10];  
 
@@ -62,7 +62,7 @@ void classifier_head_deit_quantized(
     static elem_t logits_dist[10];
     #endif
 
-    // --- 1. Process CLS Token (Row 0) ---
+    // --- 1. Process CLS Token ---
     memcpy(cls_buf, encoder_output, hidden_dim * sizeof(elem_t));
     
     #ifdef CPU_LAYERNORM
@@ -87,8 +87,7 @@ void classifier_head_deit_quantized(
     gemmini_fence();
 
     #ifdef DISTILLATION
-    // --- 2. Process Distillation Token (Row 1) ---
-    // Pointer math: encoder_output + 1*hidden_dim (Assuming sequence is [CLS, DIST, ...])
+    // --- 2. Process Distillation Token ---
     memcpy(dist_buf, encoder_output + hidden_dim, hidden_dim * sizeof(elem_t));
     
     #ifdef CPU_LAYERNORM
@@ -125,7 +124,6 @@ void classifier_head_deit_quantized(
             
             final_logits[i] = (elem_t)sum;
         #else
-            // Standard ViT: Just return CLS logits
             final_logits[i] = logits_cls[i];
         #endif
     }
