@@ -3,6 +3,7 @@ include $(abs_top_srcdir)/Makefrag
 tests = \
 	cnnt3 \
 	cnnt3_quant \
+	cnnt1_quant \
 
 
 tests_baremetal = $(tests:=-baremetal)

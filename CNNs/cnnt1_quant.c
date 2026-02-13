@@ -9,7 +9,7 @@
 #include "include/gemmini_testutils.h"
 
 // Include the generated header
-#include "includes/cnnt3_sat6_quant_params.h"
+#include "includes/cnnt1_sat6_quant_params.h"
 
 #define BATCH_SIZE 1
 #define TOLERANCE 1
@@ -24,17 +24,15 @@
 // Global Buffers for Flattened Weights
 static elem_t w1_mat[L1_KERNEL*L1_KERNEL*IN_CHANNELS][L1_OUT_CH];
 static elem_t w2_mat[L2_KERNEL*L2_KERNEL*L1_OUT_CH][L2_OUT_CH];
-static elem_t w3_mat[L3_KERNEL*L3_KERNEL*L2_OUT_CH][L3_OUT_CH];
 
 // Intermediate Feature Maps
 static elem_t l1_out[BATCH_SIZE][L1_OUT_DIM][L1_OUT_DIM][L1_OUT_CH];
 static elem_t l2_out[BATCH_SIZE][L2_OUT_DIM][L2_OUT_DIM][L2_OUT_CH];
-static elem_t l3_out[BATCH_SIZE][L3_OUT_DIM][L3_OUT_DIM][L3_OUT_CH];
 
 // Final Output
 static elem_t final_preds[BATCH_SIZE][NUM_CLASSES];
 
-//#undef DEBUG_CNNT3
+//#undef DEBUG
 
 // ==========================================
 // 4. MAIN EXECUTION
@@ -52,7 +50,6 @@ int main() {
     
     flatten_weights(L1_OUT_CH, L1_KERNEL, IN_CHANNELS, conv1_w, w1_mat);
     flatten_weights(L2_OUT_CH, L2_KERNEL, L1_OUT_CH, conv2_w, w2_mat);
-    flatten_weights(L3_OUT_CH, L3_KERNEL, L2_OUT_CH, conv3_w, w3_mat);
 
     gemmini_flush(0);
     printf("Initializing SAT6 Network (Quantized, Batch Size: %d)...\n", BATCH_SIZE);
@@ -60,7 +57,7 @@ int main() {
     // ------------------------------------------------
     // Inference Loop
     // ------------------------------------------------
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < NUM_INFERENCES; i++) {
         elem_t * current_image_ptr = (elem_t*)all_input_images[i];
         
         int ground_truth = all_ground_truths[i];
@@ -87,7 +84,7 @@ int main() {
             WS
         );
 
-        #ifdef DEBUG_CNNT3
+        #ifdef DEBUG
         if (i == 0) {
             verify_tensor("Layer 1 Output (Quantized)", 
                 (elem_t*)l1_out, (elem_t*)debug_l1_out, 
@@ -121,53 +118,23 @@ int main() {
             WS
         );
 
-        #ifdef DEBUG_CNNT3
+        #ifdef DEBUG
         if (i == 0) {
             verify_tensor("Layer 2 Output (Quantized)", 
                 (elem_t*)l2_out, (elem_t*)debug_l2_out, 
-                BATCH_SIZE * L2_OUT_DIM * L2_OUT_DIM * L2_OUT_CH, TOLERANCE);
+                BATCH_SIZE * L2_OUT_DIM * L2_OUT_DIM * NUM_CLASSES, TOLERANCE);
             display_tensor_distribution_histogram("Layer 2 Output Distribution (Quantized)", 
-                (elem_t*)l2_out, BATCH_SIZE * L2_OUT_DIM * L2_OUT_DIM * L2_OUT_CH);
-        }
-        #endif
-
-        // ------------------------------------------------
-        // LAYER 3: Conv + ReLU (Scaled)
-        // ------------------------------------------------
-        tiled_conv_auto(
-            BATCH_SIZE, L2_OUT_DIM, L2_OUT_DIM, L2_OUT_CH,
-            L3_OUT_CH, L3_OUT_DIM, L3_OUT_DIM,
-            L3_STRIDE, 1, 1, L3_PAD, L3_KERNEL,
-            false, false, false, false, false,
-
-            (elem_t*)l2_out,
-            (elem_t*)w3_mat,   // Pass flattened weights
-            (acc_t*)conv3_b,    // Pass header pointer directly
-            (elem_t*)l3_out,
-
-            RELU, 
-            (acc_scale_t)L3_SCALE,
-            0, 0, 0, 
-            WS
-        );
-
-        #ifdef DEBUG_CNNT3
-        if (i == 0) {
-            verify_tensor("Layer 3 Output (Quantized)", 
-                (elem_t*)l3_out, (elem_t*)debug_l3_out, 
-                BATCH_SIZE * L3_OUT_DIM * L3_OUT_DIM * L3_OUT_CH, TOLERANCE);
-            display_tensor_distribution_histogram("Layer 3 Output Distribution (Quantized)", 
-                (elem_t*)l3_out, BATCH_SIZE * L3_OUT_DIM * L3_OUT_DIM * L3_OUT_CH);
+                (elem_t*)l2_out, BATCH_SIZE * L2_OUT_DIM * L2_OUT_DIM * NUM_CLASSES);
         }
         #endif
 
         // ------------------------------------------------
         // GLOBAL POOLING
         // ------------------------------------------------
-        global_average_pool(BATCH_SIZE, L3_OUT_DIM, L3_OUT_DIM, L3_OUT_CH, 
-                            l3_out, final_preds);
+        global_average_pool(BATCH_SIZE, L2_OUT_DIM, L2_OUT_DIM, NUM_CLASSES, 
+                            l2_out, final_preds);
 
-        #ifdef DEBUG_CNNT3
+        #ifdef DEBUG
         if (i == 0) {
             verify_tensor("Final Output (Quantized)", 
                 (elem_t*)final_preds, (elem_t*)debug_final_out, 
@@ -194,8 +161,8 @@ int main() {
         }
     }
 
-    printf("Total mismatches: %d / 64\n", errors);
-    printf("Correct predictions: %d / 64 (%.2f%%)\n", correct_predictions, (float)correct_predictions / 64.0 * 100.0);
+    printf("Total mismatches: %d / %d\n", errors, NUM_INFERENCES);
+    printf("Correct predictions: %d / %d (%.2f%%)\n", correct_predictions, NUM_INFERENCES, (float)((correct_predictions * 100.0) / NUM_INFERENCES ));
     
     return 0;
 }
