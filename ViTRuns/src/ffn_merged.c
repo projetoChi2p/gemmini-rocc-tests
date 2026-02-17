@@ -6,6 +6,7 @@
 
 #include "include/gemmini.h"
 #include "include/gemmini_nn.h"
+#include "profiler.h"
 
 // ==========================================
 // 1. HELPER FUNCTIONS (Mode Dependent)
@@ -136,6 +137,7 @@
 
 void compute_ffn(
     int hidden_dim, int expansion_dim, int seq_len,
+    int layer_idx,           // For profiling
     const elem_t * input, 
     elem_t * out, // Final output buffer
     
@@ -155,8 +157,11 @@ void compute_ffn(
     float scale_ff2
     )
 {
+    uint64_t op_start, op_end;
+    
     // --- 0. Pre-LayerNorm (match PyTorch: norm inside FFN)
     // Normalize input into norm_buf, then use it as FC1 input.
+    op_start = read_cycles();
     #ifdef QUANTIZED
         #ifdef CPU_LAYERNORM
             memcpy(norm_buf, input, seq_len * hidden_dim * sizeof(elem_t));
@@ -181,6 +186,10 @@ void compute_ffn(
             WS
         );
     #endif
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].ffn.layernorm = op_end - op_start;
+    }
 
     #ifdef DEBUG
         if (global_layer_index == 0 && debug_inference) {
@@ -191,6 +200,7 @@ void compute_ffn(
 
     // --- 1. FC1 (Linear) ---
     // Input: [Seq, Hidden] -> Output: [Seq, Expansion]
+    op_start = read_cycles();
     tiled_matmul_auto(
         seq_len, expansion_dim, hidden_dim,
         norm_buf, ff1_w, ff1_b, fc1_buf,
@@ -215,11 +225,20 @@ void compute_ffn(
     #endif
 
     gemmini_fence();
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].ffn.fc1 = op_end - op_start;
+    }
 
     // --- 2. GELU Activation ---
+    op_start = read_cycles();
     #ifndef REPLACE_RELU
         cpu_gelu_compute(seq_len, expansion_dim, fc1_buf, gelu_buf);
     #endif
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].ffn.gelu = op_end - op_start;
+    }
 
     #ifdef DEBUG
         if (global_layer_index == 0 && debug_inference) {
@@ -233,6 +252,7 @@ void compute_ffn(
     // Unification Note: Both modes now write directly to 'out' (elem_t) to support the Residual->Norm flow.
     // Legacy FP32 used 'out_buf_acc' here, but that requires Norm->Residual topology.
     
+    op_start = read_cycles();
     tiled_matmul_auto(
         seq_len, hidden_dim, expansion_dim,
         gelu_buf, ff2_w, ff2_b, fc2_buf,
@@ -253,9 +273,14 @@ void compute_ffn(
     #endif
 
     gemmini_fence();
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].ffn.fc2 = op_end - op_start;
+    }
 
     // --- 4. Residual Add ---
     // Topology: Pre-LN within FFN; residual after FC2
+    op_start = read_cycles();
     tiled_resadd_auto(seq_len, hidden_dim,
         MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, ACC_SCALE_IDENTITY,
         fc2_buf, input, resadd_buf,
@@ -265,4 +290,8 @@ void compute_ffn(
     memcpy(out, resadd_buf, seq_len * hidden_dim * sizeof(elem_t));
     
     gemmini_fence();
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].ffn.residual_add = op_end - op_start;
+    }
 }

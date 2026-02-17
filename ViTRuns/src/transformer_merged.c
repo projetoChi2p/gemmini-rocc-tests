@@ -6,6 +6,7 @@
 
 #include "include/gemmini.h"
 #include "include/gemmini_nn.h"
+#include "profiler.h"
 
 // ==========================================
 // UNIFIED TRANSFORMER LOOP
@@ -89,6 +90,8 @@ uint64_t compute_transformer_blocks(
     const elem_t * layer_in = input;
 
     for (int l = 0; l < num_layers; l++) {
+        uint64_t layer_start = read_cycles();
+        uint64_t attn_start, attn_end, ffn_start, ffn_end;
         
         // --- DEBUG SETUP ---
         #ifdef DEBUG
@@ -103,7 +106,8 @@ uint64_t compute_transformer_blocks(
         // ====================================================================
         // Flow: Input -> QKV -> Scores -> Context -> Linear Proj -> out_buf
         
-        compute_attention(hidden_dim, num_heads, seq_len, 
+        attn_start = read_cycles();
+        compute_attention(hidden_dim, num_heads, seq_len, l,
             layer_in, 
             attn_resadd_buf, // Final attention output (post-residual)
 
@@ -124,6 +128,10 @@ uint64_t compute_transformer_blocks(
             score_scaling_factor, context_scaling_factor
             
         );
+        attn_end = read_cycles();
+        if (debug_inference && g_profiling_enabled) {
+            g_profile.encoder.layers[l].attention.total = attn_end - attn_start;
+        }
 
         
 
@@ -141,8 +149,9 @@ uint64_t compute_transformer_blocks(
         // ====================================================================
         // Flow: ffn_input_ptr -> FC1 -> GELU -> FC2 -> Residual -> Norm -> out
         
+        ffn_start = read_cycles();
         compute_ffn(
-            hidden_dim, expansion_dim, seq_len,
+            hidden_dim, expansion_dim, seq_len, l,
             attn_resadd_buf,
             out,
 
@@ -162,6 +171,10 @@ uint64_t compute_transformer_blocks(
                 ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY    
             #endif
         );
+        ffn_end = read_cycles();
+        if (debug_inference && g_profiling_enabled) {
+            g_profile.encoder.layers[l].ffn.total = ffn_end - ffn_start;
+        }
 
         #ifdef DEBUG
             if (l == 0 && debug_inference) verify_tensor("Layer 0 Out", out, (elem_t*)debug_layer0_out, seq_len * hidden_dim, TOLERANCE);
@@ -185,6 +198,11 @@ uint64_t compute_transformer_blocks(
         ff1_b += stride_ff1_b; ff2_b += stride_ff2_b;
 
         layer_in = out; // Output becomes input for next layer
+        
+        uint64_t layer_end = read_cycles();
+        if (debug_inference && g_profiling_enabled) {
+            g_profile.encoder.layers[l].total = layer_end - layer_start;
+        }
 
         gemmini_fence();
     }

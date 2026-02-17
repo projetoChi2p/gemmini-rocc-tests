@@ -40,7 +40,6 @@ void compute_hybrid_embeddings(
     #endif
 
     // --- Step 1: Hardware Accelerated Convolutional Stem ---
-    // 
     tiled_conv_auto(
         batch_size, in_row_dim, in_col_dim, in_channels,
         out_channels, out_row_dim, out_col_dim,
@@ -52,7 +51,7 @@ void compute_hybrid_embeddings(
         (elem_t*)conv_output_buf,
         NO_ACTIVATION, 
         internal_conv_scale, 
-        0, 0, 0,
+        1, 1, 0, // FIX: pool_size=1, pool_stride=1, pool_padding=0 to prevent HW division by zero
         WS
     );
     
@@ -78,16 +77,14 @@ void compute_hybrid_embeddings(
     #endif
 
     // C. Copy Convolutional Patches
-    // The conv_output_buf already contains the flattened patches from the hardware conv
-    // Dimensions: [n_patches, out_channels]
     memcpy(final_input_buf + (current_idx * out_channels), conv_output_buf, n_patches * row_size);
 
     // --- Step 3: Add Position Embeddings ---
-    // Total Sequence Length = Patches + Special Tokens
     int total_seq_len = n_patches + current_idx;
     
+    // FIX: Replaced MVIN_SCALE_IDENTITY with ACC_SCALE_IDENTITY 
     tiled_resadd_auto(total_seq_len, out_channels,
-        MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, ACC_SCALE_IDENTITY,
+        ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY,
         final_input_buf, pos_embed_data, final_input_buf,
         false, WS);
         

@@ -38,7 +38,8 @@ CFLAGS := $(CFLAGS) \
 	-I$(abs_top_srcdir) \
 	-I$(BENCH_COMMON) \
 	-DID_STRING=$(ID_STRING) \
-	-Wno-incompatible-pointer-types
+	-Wno-incompatible-pointer-types \
+	$(EXTRA_CFLAGS)
 
 CFLAGS_PK := \
 	$(CFLAGS) \

@@ -8,6 +8,7 @@
 
 #include "include/gemmini.h"
 #include "include/gemmini_nn.h"
+#include "profiler.h"
 
 
 
@@ -20,6 +21,7 @@ void compute_attention(
     int hidden_dim, 
     int num_heads, 
     int seq_len,
+    int layer_idx,           // For profiling
     const elem_t * input, 
     elem_t * out,           // FP32: Now this is just the output of Wo (Linear)
     
@@ -55,6 +57,10 @@ void compute_attention(
     // Separate buffers for each stage to avoid aliasing
     elem_t * norm_out_ptr = norm_buf;
     
+    uint64_t op_start, op_end;
+    
+    // --- 0. Pre-LayerNorm ---
+    op_start = read_cycles();
     #ifdef QUANTIZED
         #ifdef CPU_LAYERNORM
             // Pre-LN inside attention: normalize input into out_buf workspace
@@ -79,6 +85,10 @@ void compute_attention(
             norm_out_ptr, 
             ACC_SCALE_IDENTITY, LAYERNORM, WS);
     #endif
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].attention.layernorm = op_end - op_start;
+    }
 
     #ifdef DEBUG
         if (global_layer_index == 0 && debug_inference) {
@@ -88,6 +98,7 @@ void compute_attention(
     #endif
 
     // --- 1. Compute Q, K, V Projections ---
+    op_start = read_cycles();
     tiled_matmul_auto(seq_len, hidden_dim, hidden_dim,
         norm_out_ptr, Wq, Wq_b, Q_buf,
         hidden_dim, hidden_dim, hidden_dim, hidden_dim, 
@@ -107,6 +118,10 @@ void compute_attention(
         NO_ACTIVATION, (acc_scale_t)scale_v, 0, true, false, false, false, false, 0, WS);
 
     gemmini_fence();
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].attention.qkv_projections = op_end - op_start;
+    }
 
     #ifdef DEBUG
     if (global_layer_index == 0 && debug_inference) {
@@ -116,6 +131,7 @@ void compute_attention(
     #endif 
 
     // --- 2. Calculate Attention Scores (Q * K^T) ---
+    op_start = read_cycles();
     for (int h = 0; h < num_heads; h++) {
         #ifdef QUANTIZED
             tiled_matmul_auto(seq_len, seq_len, head_dim,
@@ -146,6 +162,10 @@ void compute_attention(
         #endif
     }
     gemmini_fence();
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].attention.attention_scores = op_end - op_start;
+    }
 
     #ifdef DEBUG
     #ifdef CPU_SOFTMAX
@@ -156,6 +176,7 @@ void compute_attention(
     #endif
 
     // --- 3. Softmax ---
+    op_start = read_cycles();
     for (int h = 0; h < num_heads; h++) {
         elem_t * scores_matrix = scores_buf + h * seq_len * seq_len;
         elem_t * probs_matrix  = probs_buf + h * seq_len * seq_len;
@@ -174,6 +195,10 @@ void compute_attention(
             
         #endif
     }
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].attention.softmax = op_end - op_start;
+    }
 
     #ifdef DEBUG
     if (global_layer_index == 0 && debug_inference) {
@@ -184,6 +209,7 @@ void compute_attention(
 
     // --- 4. Context Aggregation (Probs * V) ---
     // Use provided scaling to prevent saturation in quantized mode
+    op_start = read_cycles();
     float context_scale = context_scaling_factor; 
     #ifndef QUANTIZED
         context_scale = ACC_SCALE_IDENTITY;
@@ -211,6 +237,10 @@ void compute_attention(
             false, false, false, false, false, 0, WS);
     }
     gemmini_fence();
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].attention.context_aggregation = op_end - op_start;
+    }
 
     #ifdef DEBUG
     if (global_layer_index == 0 && debug_inference ) {
@@ -222,6 +252,7 @@ void compute_attention(
     acc_scale_t scale_temp = (acc_scale_t)scale_wo; // Adjust for HW/SW match
 
     // --- 5. Output Projection (Wo) ---
+    op_start = read_cycles();
     tiled_matmul_auto(seq_len, hidden_dim, hidden_dim,
         context_buf, Wo, Wo_b, wo_buf,
         hidden_dim, hidden_dim, hidden_dim, hidden_dim,
@@ -230,6 +261,10 @@ void compute_attention(
         true, false, false, false, false, 0, WS);
     
     gemmini_fence();
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].attention.output_projection = op_end - op_start;
+    }
 
     // Debug: Verify Raw Attention Output
         #ifdef DEBUG
@@ -241,6 +276,7 @@ void compute_attention(
         #endif
 
     // 2a. Residual Add
+    op_start = read_cycles();
     tiled_resadd_auto(seq_len, hidden_dim,
         MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, ACC_SCALE_IDENTITY,
         /*input A: */ wo_buf, 
@@ -251,6 +287,10 @@ void compute_attention(
     memcpy(out, resadd_buf, seq_len * hidden_dim * sizeof(elem_t));
     
     gemmini_fence();
+    op_end = read_cycles();
+    if (debug_inference && g_profiling_enabled) {
+        g_profile.encoder.layers[layer_idx].attention.residual_add = op_end - op_start;
+    }
 
     // Debug: Verify LN Output
     #ifdef DEBUG
