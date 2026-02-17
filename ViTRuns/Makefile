@@ -1,7 +1,7 @@
 include $(abs_top_srcdir)/Makefrag
 
 tests = \
-	vit-quant \
+	vit_merged \
 
 
 tests_baremetal = $(tests:=-baremetal)
