@@ -25,8 +25,8 @@ bool verify_tensor(const char* name, elem_t* hw_ptr, elem_t* sw_ptr, int size, i
     int errs = 0;
     int max_diff = 0;
     
-    // Histogram buckets: [0], [1-2], [3-5], [6-10], [>10]
-    int hist[5] = {0, 0, 0, 0, 0};
+    // Histogram buckets: [0], [1-2], [3-5], [6-10], [11-12], [13-15], [16-20], [>20]
+    int hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     
     for (int i = 0; i < size; i++) {
         int diff = abs(hw_ptr[i]*scale - sw_ptr[i]*scale);
@@ -41,8 +41,10 @@ bool verify_tensor(const char* name, elem_t* hw_ptr, elem_t* sw_ptr, int size, i
         else if (diff <= 2) hist[1]++;
         else if (diff <= 5) hist[2]++;
         else if (diff <= 10) hist[3]++;
-        else                hist[4]++;
-
+        else if (diff <= 12) hist[4]++;
+        else if (diff <= 15) hist[5]++;
+        else if (diff <= 20) hist[6]++;
+        else                 hist[7]++;
     }
 
     
@@ -56,7 +58,10 @@ bool verify_tensor(const char* name, elem_t* hw_ptr, elem_t* sw_ptr, int size, i
         printf("     1-2:  %d\n", hist[1]);
         printf("     3-5:  %d\n", hist[2]);
         printf("     6-10: %d\n", hist[3]);
-        printf("     >10:  %d\n", hist[4]);
+        printf("     11-12: %d\n", hist[4]);
+        printf("     13-15: %d\n", hist[5]);
+        printf("     16-20: %d\n", hist[6]);
+        printf("     >20:  %d\n", hist[7]);
         printf("   Max Diff: %d\n", max_diff);
         printf("===========================================\n");
         printf("   First 10 Mismatches (HW vs SW):\n");
@@ -67,7 +72,10 @@ bool verify_tensor(const char* name, elem_t* hw_ptr, elem_t* sw_ptr, int size, i
         printf("     1-2e-%d:  %d\n", log_scale, hist[1]);
         printf("     3-5e-%d:  %d\n", log_scale, hist[2]);
         printf("     6-10e-%d: %d\n", log_scale, hist[3]);
-        printf("     >10e-%d:  %d\n", log_scale, hist[4]);
+        printf("     11-12e-%d: %d\n", log_scale, hist[4]);
+        printf("     13-15e-%d: %d\n", log_scale, hist[5]);
+        printf("     16-20e-%d: %d\n", log_scale, hist[6]);
+        printf("     >20e-%d:  %d\n", log_scale, hist[7]);
         printf("   Max Diff: %de-%d\n", max_diff, log_scale);
         printf("===========================================\n");
         printf("   First 10 Mismatches (HW vs SW):\n");
@@ -366,7 +374,7 @@ void display_tensor_distribution_histogram(const char* name, elem_t* data, int s
     printf("Value Range: [%d, %d]\n", min_val, max_val);
 
     int bins[HISTOGRAM_BINS] = {0};
-    elem_t step = (max_val - min_val) / HISTOGRAM_BINS; // Avoid division by zero
+    float step = (float)(max_val - min_val) / HISTOGRAM_BINS; // Avoid division by zero
     for (int i = 0; i < size; i++) {
         elem_t val = data[i];
         for (int b = 0; b < HISTOGRAM_BINS; b++) {
@@ -383,10 +391,21 @@ void display_tensor_distribution_histogram(const char* name, elem_t* data, int s
     }
 
     for (int b = 0; b < HISTOGRAM_BINS; b++) {
-        printf("  Bin %d [%d, %d]: %d \t", b, min_val + step * b, min_val + step * (b + 1), bins[b]);
+        if (bins[b] == 0) continue; // Skip empty bins
+        printf("  Bin %d [%d, %d]: %d \t", b, (int)(min_val + step * b), (int)(min_val + step * (b + 1)), bins[b]);
         int bar_length = (bins[b] * HISTOGRAM_MAX_LEN) / histogram_length; // Scale to max 50 chars
         for (int i = 0; i < bar_length; i++) {
             printf("*");
+        }
+        printf("\n");
+    }
+}
+
+void print_tensor(elem_t* data, int rows, int cols, const char* name) {
+    printf("\n--- TENSOR: %s ---\n", name);
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            printf("%6d ", data[r * cols + c]);
         }
         printf("\n");
     }

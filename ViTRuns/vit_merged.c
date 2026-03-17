@@ -32,7 +32,7 @@
 
 // [OPTIONAL] Debugging Flags
 // #define DEBUG
-#define TOLERANCE 3
+#define TOLERANCE 1
 
 // [OPTIONAL] Architecture Flags --- Already handled via parameter files
 //#define HYBRID_EMBEDDING
@@ -41,10 +41,11 @@
 // [OPTIONAL] CPU Fallbacks
 #define CPU_LAYERNORM
 #define CPU_SOFTMAX
+// #define CPU_RESADD
 // Using ReLU instead of GELU in FFN does not affect the correctness of the attention outputs, so it's a safe optional toggle for testing or ablation.
 // #define REPLACE_RELU
 
-#define INPUT_IS_IMAGE // If defined, the embedding module will perform im2patch internally. Otherwise, it expects pre-patchified input.
+// #define INPUT_IS_IMAGE // If defined, the embedding module will perform im2patch internally. Otherwise, it expects pre-patchified input.
 #define CPU_IM2PATCH // If defined, the im2patch operation will be performed on the CPU instead of Gemmini. Only relevant if INPUT_IS_IMAGE is defined.
 
 // Global Debug State
@@ -55,6 +56,7 @@ bool debug_inference = false;
 // PARAMETER LOADING
 // ==========================================
 #include "include/input_weights.h" // Contains all input data and model weights as C arrays
+//#include "includes/minivit_cifar10_params.h" // Example parameter file for MiniViT trained on CIFAR-10. Adjust path as needed.
 
 //#undef DEBUG
 // ==========================================
@@ -105,7 +107,9 @@ static elem_t attn_wo_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
 static elem_t attn_resadd_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
 
 static elem_t ffn_norm_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
+static float  ffn_norm_in_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1); // For FP32 Norm input if needed
 static elem_t ffn_fc1_buf[TOTAL_SEQ_LEN][EXPANSION_DIM] row_align(1);
+static float  ffn_fc1_out[TOTAL_SEQ_LEN][EXPANSION_DIM] row_align(1);
 static elem_t ffn_gelu_buf[TOTAL_SEQ_LEN][EXPANSION_DIM] row_align(1);
 static elem_t ffn_fc2_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
 static elem_t ffn_resadd_buf[TOTAL_SEQ_LEN][HIDDEN_DIM] row_align(1);
@@ -148,13 +152,14 @@ int main (int argc, char * argv[]) {
     profiler_init(ENCODER_LAYERS);
            
     int correct_predictions = 0;
+    int expected_logits_errors = 0;
     int top3_correct_predictions = 0;
     int top5_correct_predictions = 0;
     uint64_t total_cycles = 0;
-    
+
     // Handle inference count definition differences
     #ifndef NUM_INFERENCES
-        #define NUM_INFERENCES 1
+        #define NUM_INFERENCES 100
     #endif
     printf("Running %d inferences...\n", NUM_INFERENCES);
     int num_inferences = NUM_INFERENCES;
@@ -307,7 +312,8 @@ int main (int argc, char * argv[]) {
             (elem_t*)attn_norm_buf, (elem_t*)attn_context_buf,
             (elem_t*)attn_wo_buf, (elem_t*)attn_resadd_buf,
 
-            (elem_t*)ffn_norm_buf, (elem_t*)ffn_fc1_buf,
+            (elem_t*)ffn_norm_buf, (float*)ffn_norm_in_buf, 
+            (elem_t*)ffn_fc1_buf, (float*) ffn_fc1_out,
             (elem_t*)ffn_gelu_buf, (elem_t*)ffn_fc2_buf,
             (elem_t*)ffn_resadd_buf,
 
@@ -320,9 +326,13 @@ int main (int argc, char * argv[]) {
             // Per-Layer Scales (Quantized Only)
             #ifdef QUANTIZED
                 scales_q, scales_k, scales_v, scales_wo,
-                scales_scores, scales_ff1, scales_ff2,
+                scales_score, scales_ff1, scales_ff2,
             #endif
-            CONTEXT_SCALE
+            scales_context,
+            scales_act_ln1,
+            scales_act_ln2,
+            scales_act_res1,
+            scales_act_res2
         );
         phase_end = read_cycles();
         if (i == 0) g_profile.encoder.total = phase_end - phase_start;
@@ -342,7 +352,7 @@ int main (int argc, char * argv[]) {
             (elem_t*)final_logits,
             head_w, head_b,
             (elem_t*)ln_output_buf, // Reuse scratchpad for LN
-            
+            scales_act_ln_final[0],
             // Quantized Specifics
             #ifdef QUANTIZED
                 SCALE_HEAD // Example scale for classifier head (depends on final activation range)
@@ -376,6 +386,17 @@ int main (int argc, char * argv[]) {
             //return 1;
         }
 
+        #ifdef DEBUG
+            printf("Expected final Logits :\n");     
+            int expected_class = find_max_index((elem_t*)debug_all_logits_int[i], NUM_CLASSES);
+            if (expected_class == ground_truth) {
+                // printf("Expected prediction matches ground truth: %d\n", expected_class);
+            } else {
+                //printf("Expected prediction does NOT match ground truth: Predicted %d, Expected %d\n", expected_class, ground_truth);
+                expected_logits_errors ++;
+            }
+
+        #endif
         
         uint64_t end = read_cycles();
         if (i == 0) g_profile.total = end - start;
@@ -419,9 +440,11 @@ int main (int argc, char * argv[]) {
         // Helper function should be available in utils.c
         if (is_in_top_k((elem_t*)final_logits, NUM_CLASSES, ground_truth, 3)) {
             top3_correct_predictions++;
+            // printf("Top-3 correct prediction for image %d: Predicted %d, Expected %d\n", i, prediction, ground_truth);
         }   
         if (is_in_top_k((elem_t*)final_logits, NUM_CLASSES, ground_truth, 5)) {
             top5_correct_predictions++;
+            // printf("Top-5 correct prediction for image %d: Predicted %d, Expected %d\n", i, prediction, ground_truth);
         }   
         
         
@@ -433,8 +456,10 @@ int main (int argc, char * argv[]) {
 
     print_results_summary(num_inferences, correct_predictions, top3_correct_predictions, top5_correct_predictions, total_cycles);
     
+    printf("Expected logits errors (debug vs actual): %d\n", expected_logits_errors);
+
     // Print profiling report (uses data from first inference)
-    profiler_print_report();
+    // profiler_print_report();
     
     // Cleanup
     profiler_free();

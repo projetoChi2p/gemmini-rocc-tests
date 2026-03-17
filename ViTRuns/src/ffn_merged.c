@@ -13,6 +13,67 @@
 // ==========================================
 
 #ifdef QUANTIZED
+    static inline float fast_exp_approx(float x) {
+        if (x <= -88.0f) return 0.0f;
+        if (x >= 88.0f) x = 88.0f;
+        union { float f; int i; } u;
+        // Schraudolph-style approximation to expf(x)
+        u.i = (int)(12102203.0f * x + 1064986824);
+        return u.f;
+    }
+
+    static inline float fast_tanh_float(float x) {
+        float abs_x = (x < 0.0f) ? -x : x;
+        if (abs_x > 4.0f) return (x < 0.0f) ? -1.0f : 1.0f;
+
+        // Assuming fast_exp_schraudolph is defined in the shared scope (utils.c)
+        float e2x = fast_exp_approx(2.0f * abs_x);
+        float t = (e2x - 1.0f) / (e2x + 1.0f);
+        return (x < 0.0f) ? -t : t;
+    }
+
+    void cpu_gelu_compute_float(int rows, int cols, elem_t * input, elem_t * output) {
+        const float SQRT_2_OVER_PI = 0.7978845608f;
+        const float COEF = 0.044715f;
+
+        for (int i = 0; i < rows * cols; i++) {
+            float x = (float)input[i];
+            float inner = SQRT_2_OVER_PI * (x + COEF * x * x * x);
+            float tanh_res = fast_tanh_float(inner);
+            output[i] = (elem_t)(0.5f * x * (1.0f + tanh_res));
+        }
+    }
+
+    void cpu_layernorm_compute_float(int rows, int cols, float * data) {
+        for(int i=0; i<rows; i++) {
+            float sum=0, sq=0;
+            // 1. Mean & Variance
+            for(int j=0; j<cols; j++) {
+                float v = (float)data[i*cols + j];
+                sum += v; 
+                sq += v*v;
+            }
+            float mean = sum/cols;
+            float var_term = (sq/cols) - (mean*mean);
+            if (var_term < 0) var_term = 0; // Safety clamp
+            
+            float std = sqrtf(var_term + 1e-5); 
+            
+            // 2. Normalize & Scale
+            for(int j=0; j<cols; j++) {
+                float v = (float)data[i*cols + j];
+                float n = (v - mean)/std ; 
+                
+                // Use explicit rounding helper
+                // int res = my_round_ffn(n);
+                
+                // if(res > elem_t_max) res=elem_t_max; 
+                // if(res < elem_t_min) res=elem_t_min;
+                data[i*cols+j] = (float)n;
+            }
+        }
+    }
+
     // --- QUANTIZED HELPERS (Int8) ---
     // Optimized integer-based approximations
     static inline float my_exp_ffn(float x) {
@@ -147,14 +208,19 @@ void compute_ffn(
     
     // Scratchpads
     elem_t * norm_buf,      // Pre-LN output
+    float * norm_input_buf, // For FP32 Norm input if needed
     elem_t * fc1_buf,       // FC1 output
+    float *  ffn_fc1_out,   // FC1 output in float (for GELU) - only used in unified post-norm
     elem_t * gelu_buf,      // GELU output
     elem_t * fc2_buf,       // FC2 output
     elem_t * resadd_buf,    // Residual output
     acc_t * out_buf_acc,    // Intermediate (FC2 Acc - used in legacy FP32, now largely unused in unified post-norm)
 
+    float scale_wo,
     float scale_ff1,
-    float scale_ff2
+    float scale_ff2,
+    float scale_act_ln2,
+    float scale_act_res2
     )
 {
     uint64_t op_start, op_end;
@@ -165,7 +231,17 @@ void compute_ffn(
     #ifdef QUANTIZED
         #ifdef CPU_LAYERNORM
             memcpy(norm_buf, input, seq_len * hidden_dim * sizeof(elem_t));
-            cpu_layernorm_compute(seq_len, hidden_dim, norm_buf);
+            /*for (int i = 0; i < seq_len * hidden_dim; i++) {
+                norm_input_buf[i] = input[i] * scale_wo;
+            }*/
+            cpu_layernorm(seq_len, hidden_dim, norm_buf, scale_act_ln2);
+            /*for (int i = 0; i < seq_len * hidden_dim; i++) {
+                // Re-quantize normalized output
+                int out_val = my_round_ffn(norm_input_buf[i] / scale_wo);
+                if (out_val > elem_t_max) out_val = elem_t_max;
+                if (out_val < elem_t_min) out_val = elem_t_min;
+                norm_buf[i] = (elem_t)out_val;
+            }*/
         #else
             tiled_norm_auto(
                 seq_len, hidden_dim,
@@ -230,6 +306,11 @@ void compute_ffn(
         g_profile.encoder.layers[layer_idx].ffn.fc1 = op_end - op_start;
     }
 
+    // rescale fc1_buf for GELU for fp32 
+    /*for (int i = 0; i < seq_len * expansion_dim; i++) {
+        ffn_fc1_out[i] = ((float)fc1_buf[i] * scale_ff1);
+    }*/
+
     // --- 2. GELU Activation ---
     op_start = read_cycles();
     #ifndef REPLACE_RELU
@@ -241,9 +322,12 @@ void compute_ffn(
     }
 
     #ifdef DEBUG
-        if (global_layer_index == 0 && debug_inference) {
-            verify_tensor("Layer 0 GELU", gelu_buf, (elem_t*)debug_layer0_gelu, seq_len * expansion_dim, TOLERANCE);
-        }
+    if (global_layer_index == 0 && debug_inference) {
+        verify_tensor("Layer 0 GELU", gelu_buf, (elem_t*)debug_layer0_gelu, seq_len * expansion_dim, TOLERANCE);
+    }
+    // exit(1);
+    #ifdef REPLACE_RELU
+    #endif
     #endif
 
 
@@ -270,6 +354,7 @@ void compute_ffn(
         if (global_layer_index == 0 && debug_inference) {
             verify_tensor("Layer 0 FC2", fc2_buf, (elem_t*)debug_layer0_fc2, seq_len * hidden_dim, TOLERANCE);
         }
+        // exit(1);
     #endif
 
     gemmini_fence();
@@ -278,11 +363,13 @@ void compute_ffn(
         g_profile.encoder.layers[layer_idx].ffn.fc2 = op_end - op_start;
     }
 
+    float ffn_residual_scale = scales_act_res1[layer_idx] / scales_act_res2[layer_idx];
+
     // --- 4. Residual Add ---
     // Topology: Pre-LN within FFN; residual after FC2
     op_start = read_cycles();
     tiled_resadd_auto(seq_len, hidden_dim,
-        MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, ACC_SCALE_IDENTITY,
+        MVIN_SCALE_IDENTITY, (acc_scale_t)ffn_residual_scale, ACC_SCALE_IDENTITY,
         fc2_buf, input, resadd_buf,
         false, WS);
 
@@ -294,4 +381,5 @@ void compute_ffn(
     if (debug_inference && g_profiling_enabled) {
         g_profile.encoder.layers[layer_idx].ffn.residual_add = op_end - op_start;
     }
+
 }

@@ -7,7 +7,7 @@
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
 
-#define CONCAT_HIDDEN(a, b, c, d) a ## _ ## b ## _ ## d
+#define CONCAT_HIDDEN(a, b, c, d) a ## _ ## b ## _ ## c ## _ ## d
 #define CONCAT(a, b, c, d) CONCAT_HIDDEN(a, b, c, d)
 
 // 1. Determine the suffix
@@ -17,11 +17,11 @@
     #define SUFFIX params
 #endif
 
-// 2. Build the middle part of the filename: "minivit_mnist_params"
-#define FILENAME_CORE CONCAT(MODEL, DATASET, _, SUFFIX)
+// 2. Build the middle part of the filename: "minivit_mnist_base_params"
+#define FILENAME_CORE CONCAT(MODEL, DATASET, VERSION, SUFFIX)
 
 // 3. Use the preprocessor's ability to join strings automatically
-// "includes/" "minivit_mnist_params" ".h" becomes "includes/minivit_mnist_params.h"
+// "includes/" "minivit_mnist_base_params" ".h" becomes "includes/minivit_mnist_base_params.h"
 #define FULL_PATH TOSTRING(ViTRuns/includes/FILENAME_CORE.h)
 
 #include FULL_PATH

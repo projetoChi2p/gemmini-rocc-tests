@@ -43,7 +43,9 @@ void compute_attention(
     float scale_scores_matmul,    // Output scale for MatMul
 
     float score_scaling_factor,   // Single float scaling
-    float context_scaling_factor
+    float context_scaling_factor,
+    float scale_act_ln1,
+    float scale_act_res1
 
     )
 {
@@ -65,15 +67,22 @@ void compute_attention(
         #ifdef CPU_LAYERNORM
             // Pre-LN inside attention: normalize input into out_buf workspace
             memcpy(norm_out_ptr, input, seq_len * hidden_dim * sizeof(elem_t));
-            cpu_layernorm(seq_len, hidden_dim, norm_out_ptr);
+            
+            // NEW: Pass the weights and the output scale
+            cpu_layernorm(seq_len, hidden_dim, norm_out_ptr, 
+                          scale_act_ln1);
         #else
             // HW LayerNorm: input -> out_buf
+            acc_t * promoted_input = (acc_t*)resadd_buf; // Borrow an unused 32-bit buffer temporarily
+            for(int i = 0; i < seq_len * hidden_dim; i++) {
+                promoted_input[i] = (acc_t)input[i];
+            }
             tiled_norm_auto(
                 seq_len,
                 hidden_dim,
-                (acc_t*)input,
+                promoted_input, // Pass the physically promoted array
                 norm_out_ptr,
-                ACC_SCALE_IDENTITY,
+                ACC_SCALE_IDENTITY, 
                 LAYERNORM,
                 WS
             );
@@ -126,6 +135,7 @@ void compute_attention(
     #ifdef DEBUG
     if (global_layer_index == 0 && debug_inference) {
         verify_tensor("Attn: Q Proj", Q_buf, (elem_t*)debug_layer0_q, seq_len * hidden_dim, TOLERANCE);
+        verify_tensor("Attn: K Proj", K_buf, (elem_t*)debug_layer0_k, seq_len * hidden_dim, TOLERANCE);
         verify_tensor("Attn: V Proj", V_buf, (elem_t*)debug_layer0_v, seq_len * hidden_dim, TOLERANCE);
     }
     #endif 
@@ -142,9 +152,9 @@ void compute_attention(
                 hidden_dim, hidden_dim, 0, seq_len, 
                 MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY,
                 #ifdef CPU_SOFTMAX
-                    NO_ACTIVATION, (acc_scale_t)SCORE_SCALING_FACTOR, 0, false, 
+                    NO_ACTIVATION, (acc_scale_t)scale_scores_matmul*SCALE_DK, 0, false, 
                 #else
-                    SOFTMAX, (acc_scale_t)SCORE_SCALING_FACTOR, (acc_scale_t)0.05, false, 
+                    SOFTMAX, (acc_scale_t)scale_scores_matmul*SCALE_DK, (acc_scale_t)0.05, false, 
                 #endif
                 false, true, false, false, 0, WS);
                 
@@ -172,6 +182,7 @@ void compute_attention(
     if (global_layer_index == 0 && debug_inference) {
         verify_tensor("Attn: Scores (Head 0) - Q * K^T", scores_buf, (elem_t*)debug_layer0_scores_head0, seq_len * seq_len, TOLERANCE);
     }
+    // exit(0);
     #endif
     #endif
 
@@ -184,7 +195,10 @@ void compute_attention(
         #ifdef QUANTIZED
             #ifdef CPU_SOFTMAX
                 memcpy(probs_matrix, scores_matrix, seq_len * seq_len * sizeof(elem_t));
-                cpu_softmax_quantized(seq_len, seq_len, probs_matrix, 1.0/8.0);
+                // Dequantize scores_int with their FP scale (score_scaling_softmax = s["score"]),
+                // NOT with the matmul acc_scale.  These are different values.
+                cpu_softmax_fp32_hybrid(seq_len, seq_len, probs_matrix, scale_scores_matmul/SCALE_DK);
+                
             #else
                 // HW softmax already wrote into scores buffer when enabled; copy to probs buffer
                 memcpy(probs_matrix, scores_matrix, seq_len * seq_len * sizeof(elem_t));
@@ -203,12 +217,20 @@ void compute_attention(
     #ifdef DEBUG
     if (global_layer_index == 0 && debug_inference) {
         verify_tensor("Attn: Probs (Head 0) - SOFTMAX", probs_buf, (elem_t*)debug_layer0_probs_head0, seq_len * seq_len, TOLERANCE);
-        //exit(0);
+        display_tensor_distribution_histogram("Attn: Probs (Head 0) - SOFTMAX", probs_buf, seq_len * seq_len);
+        display_tensor_distribution_histogram("Attn: Probs (Head 0) - SOFTMAX (Expected)", debug_layer0_probs_head0, seq_len * seq_len);
+        // print_tensor(probs_buf, seq_len, seq_len, "Attn: Probs (Head 0) - SOFTMAX");
+        // exit(0);
     }
     #endif
 
     // --- 4. Context Aggregation (Probs * V) ---
-    // Use provided scaling to prevent saturation in quantized mode
+    // IMPORTANT: probs_buf holds INTEGER values in [0, Q_MAX=127], NOT floats in [0,1].
+    // The Gemmini acc_scale must therefore be:
+    //   context_scale = s["v"] / (Q_MAX * s["context"])
+    //                 = scales_v / (127 * scales_context_output)
+    // If scales_context[l] in your param file is the raw activation scale s["context"],
+    // you are missing the 1/Q_MAX factor and the s["v"] numerator.
     op_start = read_cycles();
     float context_scale = context_scaling_factor; 
     #ifndef QUANTIZED
@@ -217,20 +239,25 @@ void compute_attention(
     
     for (int h = 0; h < num_heads; h++) {
         tiled_matmul_auto(
-            seq_len,      // dim_I: How many rows we are calculating
-            head_dim,     // dim_J: How many columns this head has
-            seq_len,      // dim_K: The dot-product dimension
+            seq_len,      // dim_I: Rows (tokens)
+            head_dim,     // dim_J: Columns per head (64)
+            seq_len,      // dim_K: Reduction dim (the probabilities)
 
-            // Pointer math finds the "Top Left" corner of the head's slice
+            // Matrix A: Probs (This is head-specific, often contiguous if h is outer)
             probs_buf + (h * seq_len * seq_len), 
+            
+            // Matrix B: V_buf (Offset by head_dim, but jump by hidden_dim to next row)
             V_buf + (h * head_dim), 
+            
             NULL, 
+            
+            // Matrix C: Output (Write into the specific head slot of the interleaved buffer)
             context_buf + (h * head_dim), 
 
-            seq_len,      // stride_A: Rows in Probs are seq_len apart
-            hidden_dim,   // stride_B: Rows in V are hidden_dim apart! <--- FIX
+            seq_len,      // stride_A: Distance between rows in probs
+            hidden_dim,   // stride_B: Distance between rows in V (Crucial!)
             0, 
-            hidden_dim,   // stride_C: Rows in Out are hidden_dim apart! <--- FIX
+            hidden_dim,   // stride_C: Distance between rows in context_buf
             
             MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY,
             NO_ACTIVATION, (acc_scale_t)context_scale, 0,
@@ -244,13 +271,34 @@ void compute_attention(
 
     #ifdef DEBUG
     if (global_layer_index == 0 && debug_inference ) {
-        verify_tensor("Attn: Context (Head 0)", context_buf, (elem_t*)debug_layer0_context_head0, seq_len * head_dim, TOLERANCE);
-        //exit(0);
+        // 1. Create a contiguous temporary buffer for Head 0
+        elem_t debug_contiguous_head0[seq_len * head_dim];
+        
+        // 2. Extract Head 0 from the interleaved context_buf
+        for (int i = 0; i < seq_len; i++) {
+            memcpy(&debug_contiguous_head0[i * head_dim], 
+                   &context_buf[i * hidden_dim], // Jump by hidden_dim to stay on Head 0
+                   head_dim * sizeof(elem_t));
+        }
+
+        // 3. Verify the contiguous buffer
+        verify_tensor("Attn: Context (Head 0)", debug_contiguous_head0, 
+                      (elem_t*)debug_layer0_context_head0, seq_len * head_dim, TOLERANCE);
+
+        display_tensor_distribution_histogram("Attn: Context (Head 0)", debug_contiguous_head0, seq_len * head_dim);
+        // display_tensor_distribution_histogram("Attn: Context (Head 0) Expected", debug_layer0_context_head0, seq_len * head_dim);
+
+        // exit(0);
     }
     #endif
 
-    acc_scale_t scale_temp = (acc_scale_t)scale_wo; // Adjust for HW/SW match
+    // Pass M_wo to the hardware, NOT scale_wo
+    acc_scale_t scale_temp = (acc_scale_t)scale_wo ; // Combine the output scaling with the context scaling to maintain HW/SW match
+    // tiled_matmul_auto(..., scale_temp, ...);
+    // acc_scale_t scale_temp = (acc_scale_t)scale_wo; // Adjust for HW/SW match
 
+    // printf("Debug:  scale_wo = %d.%06d\n", (int)(scale_wo), (int)((scale_wo - (int)scale_wo) * 1000000)); // Print scale_wo for debugging
+        
     // --- 5. Output Projection (Wo) ---
     op_start = read_cycles();
     tiled_matmul_auto(seq_len, hidden_dim, hidden_dim,
@@ -270,20 +318,32 @@ void compute_attention(
         #ifdef DEBUG
         if (global_layer_index == 0 && debug_inference) {
             verify_tensor("Layer 0 Wo Proj", wo_buf, (elem_t*)debug_layer0_proj, seq_len * hidden_dim, TOLERANCE);
-            //exit(0);
+            display_tensor_distribution_histogram("Layer 0 Wo Proj Distribution", wo_buf, seq_len * hidden_dim);
+            display_tensor_distribution_histogram("Layer 0 Wo Proj Distribution (expected)", debug_layer0_proj, seq_len * hidden_dim);
+            // exit(0);
         }
 
         #endif
 
+    float residual_input_scale;
+    if (layer_idx == 0) {
+        // Layer 0 input comes from the Embedding block
+        residual_input_scale = scales_act_embed[layer_idx] / scales_act_res1[layer_idx]; 
+    } else {
+        // Layer 1+ input comes from the previous layer's ResAdd 2
+        residual_input_scale = scales_act_res2[layer_idx - 1] / scales_act_res1[layer_idx];
+    }
+
     // 2a. Residual Add
     op_start = read_cycles();
     tiled_resadd_auto(seq_len, hidden_dim,
-        MVIN_SCALE_IDENTITY, MVIN_SCALE_IDENTITY, ACC_SCALE_IDENTITY,
+        MVIN_SCALE_IDENTITY,               // Scale A: wo_buf (Already in target scale)
+        (acc_scale_t)residual_input_scale, // Scale B: Align the residual input
+        ACC_SCALE_IDENTITY,                // Output scale (1.0, just write it)
         /*input A: */ wo_buf, 
         /*input B: */ input, 
         /*output B:*/ resadd_buf,
         false, WS);
-
     memcpy(out, resadd_buf, seq_len * hidden_dim * sizeof(elem_t));
     
     gemmini_fence();
@@ -296,7 +356,7 @@ void compute_attention(
     #ifdef DEBUG
         if (global_layer_index == 0 && debug_inference) {
             verify_tensor("Layer 0 Resadd 1", out, (elem_t*)debug_layer0_res1, seq_len * hidden_dim, TOLERANCE);
-            //exit(1);    
+            // exit(1);    
         }
     #endif
 

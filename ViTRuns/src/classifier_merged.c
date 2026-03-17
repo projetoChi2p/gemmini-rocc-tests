@@ -6,27 +6,6 @@
 #include "include/gemmini.h"
 #include "include/gemmini_nn.h"
 
-// ==========================================
-// 1. RE-DEFINED LOGIC FOR STABILITY
-// ==========================================
-#ifdef QUANTIZED
-void cpu_layernorm_cls(elem_t * cls_token, int dim) {
-    float sum=0, sq=0;
-    for(int j=0; j<dim; j++) {
-        float v = cls_token[j];
-        sum += v; sq += v*v;
-    }
-    float mean = sum/dim;
-    float std = sqrtf(sq/dim - mean*mean + 1e-5);
-    for(int j=0; j<dim; j++) {
-        float v = cls_token[j];
-        float n = (v - mean)/std * RANGE_LN_OUT; // Scale 20
-        int res = (int)(n + (n>0?0.5:-0.5));
-        if(res > elem_t_max) res=elem_t_max; if(res<elem_t_min) res=elem_t_min;
-        cls_token[j] = (elem_t)res;
-    }
-}
-#endif
 
 void compute_classifier(
     int hidden_dim, int num_classes,
@@ -34,6 +13,7 @@ void compute_classifier(
     elem_t * final_logits,         
     const elem_t * head_w, const acc_t * head_b,
     elem_t * ln_output_buf, 
+    float scale_act_ln_final,
     float scale
     #ifdef DISTILLATION
         , const elem_t * head_w_dist, const acc_t * head_b_dist
@@ -52,7 +32,7 @@ void compute_classifier(
 
     #ifdef QUANTIZED
         #ifdef CPU_LAYERNORM
-            cpu_layernorm_cls(ln_output_buf, hidden_dim);
+            cpu_layernorm(1, hidden_dim, ln_output_buf, scale_act_ln_final);
         #else
             // HW Norm expects acc_t input. If elem_t is int8, this requires a cast/conversion.
             // For stability, we assume ln_output_buf is already treated as the target.
@@ -70,13 +50,16 @@ void compute_classifier(
     #ifdef DEBUG
     if (debug_inference) {
         verify_tensor("CLS Token Norm", ln_output_buf, (elem_t*)debug_final_ln, hidden_dim, TOLERANCE);
+        display_tensor_distribution_histogram("CLS Token After LN", ln_output_buf, hidden_dim);
+        display_tensor_distribution_histogram("CLS Token After LN (Expected)", debug_final_ln, hidden_dim);
+        // exit(0);
     }
     #endif
 
     // --- STEP 2: CLS PROJECTION ---
     acc_scale_t proj_scale = ACC_SCALE_IDENTITY;
     #ifdef QUANTIZED    
-        proj_scale = (acc_scale_t)scale;
+        proj_scale = (acc_scale_t)SCALE_HEAD; // Example scale for classifier head (depends on final activation range)
     #endif
 
     tiled_matmul_auto(1, num_classes, hidden_dim,
@@ -135,6 +118,9 @@ void compute_classifier(
             final_logits[i] = logits_cls[i];
         #endif
     }
+
+    // softmax logit
+    
 
     gemmini_fence();
 }

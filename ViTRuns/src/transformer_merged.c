@@ -49,7 +49,8 @@ uint64_t compute_transformer_blocks(
     elem_t * attn_norm_buf, elem_t * attn_context_buf,
     elem_t * attn_wo_buf, elem_t * attn_resadd_buf,
 
-    elem_t * ffn_norm_buf, elem_t * ffn_fc1_buf,
+    elem_t * ffn_norm_buf, float * ffn_norm_in_buf, 
+    elem_t * ffn_fc1_buf, float * ffn_fc1_out,
     elem_t * ffn_gelu_buf, elem_t * ffn_fc2_buf,
     elem_t * ffn_resadd_buf,
 
@@ -64,7 +65,8 @@ uint64_t compute_transformer_blocks(
         const float * scales_scores, const float * scales_ff1, const float * scales_ff2,
     #endif
 
-    float context_scaling_factor
+    float * scales_context, float * scales_act_ln1, float * scales_act_ln2,
+    float * scale_act_res1, float * scale_act_res2
 
 )
 {
@@ -125,7 +127,8 @@ uint64_t compute_transformer_blocks(
                 ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY,
                 score_scaling_factor, score_scaling_factor,
             #endif
-            score_scaling_factor, context_scaling_factor
+            score_scaling_factor, scales_context[l], scales_act_ln1[l],
+            scale_act_res1[l]
             
         );
         attn_end = read_cycles();
@@ -159,17 +162,20 @@ uint64_t compute_transformer_blocks(
             ff1_b, ff2_b,
             
             ffn_norm_buf,
+            ffn_norm_in_buf,
             ffn_fc1_buf,
+            ffn_fc1_out,
             ffn_gelu_buf,
             ffn_fc2_buf,
             ffn_resadd_buf,
             out_buf_acc,
             
             #ifdef QUANTIZED
-                scales_ff1[l], scales_ff2[l]
+                scales_wo[l], scales_ff1[l], scales_ff2[l],
             #else   
-                ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY    
+                ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY, ACC_SCALE_IDENTITY,   
             #endif
+            scales_act_ln2[l], scale_act_res2[l]
         );
         ffn_end = read_cycles();
         if (debug_inference && g_profiling_enabled) {
@@ -181,7 +187,7 @@ uint64_t compute_transformer_blocks(
             //if (l == 1 && debug_inference) verify_tensor("Layer 1 Out", out, (elem_t*)debug_layer1_out, seq_len * hidden_dim, TOLERANCE);
             //if (l == 2 && debug_inference) verify_tensor("Layer 2 Out", out, (elem_t*)debug_layer2_out, seq_len * hidden_dim, TOLERANCE);
             //if (l == 3 && debug_inference) verify_tensor("Layer 3 Out", out, (elem_t*)debug_layer3_out, seq_len * hidden_dim, TOLERANCE);
-            //exit(0);
+            // exit(0);
         #endif
 
         // ====================================================================
